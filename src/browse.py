@@ -6,7 +6,7 @@ Everything is fetched with yt-dlp's flat extraction (no per-video requests), so 
 import re
 import time
 from threading import Lock
-from urllib.parse import urlparse
+from urllib.parse import quote_plus, urlparse
 
 from main import *
 from addons import YTDLP, get_global_cookies_file, pprint_exc
@@ -151,7 +151,10 @@ def _channel_banner(info: dict) -> str:
 SEARCH_BUCKET = 96  # results per YouTube search call; pages are sliced from it
 
 
-def _search_page(query: str, page: int, cookies: bool = False) -> dict:
+SHORTS_FILTER = 'EgIQCQ%253D%253D'  # YouTube search filter "Type: Shorts" (as it appears in results URLs)
+
+
+def _search_page(query: str, page: int, cookies: bool = False, sp: str | None = None) -> dict:
     """ytsearchN always starts from the first result, so fetching page 5 used to re-run pages 1-4.
     Fetch 96 results at a time (cached) and slice pages out of them."""
     per_bucket = SEARCH_BUCKET // PAGE_SIZE
@@ -159,9 +162,11 @@ def _search_page(query: str, page: int, cookies: bool = False) -> dict:
     n = bucket * SEARCH_BUCKET
     def build():
         start = (bucket - 1) * SEARCH_BUCKET + 1
-        info = YTDLP.get_info(f'ytsearch{n}:{query}', _flat_opts(start, n, cookies)) or {}
+        # ytsearch always applies YouTube's "Videos only" filter; other filters need a results URL
+        source = f'https://www.youtube.com/results?search_query={quote_plus(query)}&sp={sp}' if sp else f'ytsearch{n}:{query}'
+        info = YTDLP.get_info(source, _flat_opts(start, n, cookies)) or {}
         return [e for e in (_simplify(x) for x in (info.get('entries') or [])) if e]
-    items = _cached(f'search|{query}|{bucket}|{cookies}', build)
+    items = _cached(f'search|{query}|{bucket}|{cookies}|{sp}', build)
     offset = ((page - 1) % per_bucket) * PAGE_SIZE
     chunk = items[offset:offset + PAGE_SIZE]
     more = len(chunk) >= PAGE_SIZE or (offset + PAGE_SIZE >= len(items) and len(items) >= SEARCH_BUCKET)
@@ -200,13 +205,21 @@ def browse(kind: str, page: int = 1, q: str = '', url: str = '', tab: str = 'vid
         return _fetch(':ytwatchlater', page, cookies=True) | {'title': 'Watch later'}
     if kind == 'shorts':
         # Shorts discovery: search results narrowed to shorts (vertical, up to 3 minutes)
+        # 1. YouTube's own Shorts filter: every result is a real Short
+        keep = lambda d: [it | {'kind': 'short'} for it in d['items'] if it['kind'] in ('short', 'video') and not it.get('live')]
+        try:
+            # decided by page 1 (cached), so every page of one feed uses the same source
+            if keep(_search_page(q or '#shorts', 1, sp=SHORTS_FILTER)):
+                data = _search_page(q or '#shorts', page, sp=SHORTS_FILTER)
+                return data | {'items': keep(data), 'title': 'Shorts'}
+        except Exception as e:
+            pprint_exc(e)
+        # 2. fallback: normal search, real Shorts first, otherwise short videos (never an empty feed)
         data = _search_page(f'{q} #shorts' if q else '#shorts', page)
-        # real Shorts only (YouTube links them as /shorts/); regular widescreen videos don't belong in the feed
         items = [it for it in data['items'] if it['kind'] == 'short']
-        if not items and data['items'] and not any(it['kind'] == 'short' for it in _search_page(f'{q} #shorts' if q else '#shorts', 1)['items']):
-            # this search never returns /shorts/ links: fall back to very short videos
+        if not items:
             items = [it | {'kind': 'short'} for it in data['items']
-                     if it['kind'] == 'video' and it.get('duration') and 0 < it['duration'] <= 60 and not it.get('live')]
+                     if it['kind'] == 'video' and it.get('duration') and 0 < it['duration'] <= 180 and not it.get('live')]
         return data | {'items': items, 'title': 'Shorts'}
     if kind == 'channel':
         if tab not in ('videos', 'shorts', 'streams', 'playlists'): tab = 'videos'
