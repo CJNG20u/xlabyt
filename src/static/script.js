@@ -1209,6 +1209,7 @@ async function loadVideo()
     if (debugView) debugView.onclick = displayDebugInfo;
     var url = getUrlInfo();
     if (url.urlParams.toString().length < 10) return;
+    if (window.SHORTS_MODE) repeatMode = true;  // shorts loop
     
     document.getElementById('video').insertAdjacentHTML('beforeend', playerMarkup());
     const appTitle = document.querySelector('meta[property="og:site_name"]').getAttribute('content');
@@ -1291,13 +1292,14 @@ async function loadVideo()
     function playerReady() {
         if (!container.classList.contains('loading')) return;
         container.classList.remove('loading');
+        if (window.SHORTS_MODE) { window.shortsIsReady = true; window.dispatchEvent(new Event('shorts-ready')); }
         document.querySelector('.media-poster-image').style.filter = 'none';
         container.style.transitionDuration = '0.5s';
         adjustVideoSize();
         window.addEventListener('resize', adjustVideoSize);
         setTimeout(() => {container.style.transitionDuration = '0s';}, 100);
 
-        if (parseFloat(info.duration) < parseInt(info.generate_sprite_below) && parseFloat(info.duration) > 0)
+        if (!window.SHORTS_MODE && parseFloat(info.duration) < parseInt(info.generate_sprite_below) && parseFloat(info.duration) > 0)
         {
             retryFetch(`/sprite?url=${url.encodedUrl}`, {}, 100, undefined, false).then(response => response.blob()).then(blob => {
                 const [width, height, columns, interval] = info.sprite;

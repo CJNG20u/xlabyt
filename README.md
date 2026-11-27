@@ -35,6 +35,7 @@ The YouTube app and website are built around ads, autoplay rabbit holes and feat
 ## Key Features
 
 - **YouTube-style Home & Search**: Infinite-scroll search results, channel pages (Videos / Shorts / Live / Playlists) and playlists. Paste any link into the search bar to play it.
+- **Shorts**: Full-screen vertical feed under Home: swipe or use the arrow keys, tap to pause, mute, loop. Mixes Shorts from channels you follow with Shorts discovery; tapping a Short anywhere opens it in the feed.
 - **Watch Page**: Full-width player with title, channel and subscribers, likes, an expandable description with clickable timestamps, and read-only comments (top / newest, with replies).
 - **Up Next & Autoplay**: Recommendations from the video's YouTube mix, topped up with related search results, plus a 5-second autoplay countdown you can cancel.
 - **Following Without an Account**: Follow channels from their page; their newest uploads fill your Home page. Saved in your browser.

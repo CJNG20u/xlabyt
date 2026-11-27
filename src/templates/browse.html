@@ -117,6 +117,74 @@
         .skeleton .line { height: 12px; border-radius: 6px; background: var(--bg2); margin: 6px 0; animation: pulse 1.2s ease-in-out infinite; }
         @keyframes pulse { 50% { opacity: .5; } }
 
+        /* ---------- shorts ---------- */
+        body.shorts-mode main { padding: 0; }
+        .shorts-viewer {
+            position: fixed; top: var(--top); bottom: 0; left: var(--side); right: 0; z-index: 5;
+            overflow-y: scroll; scroll-snap-type: y mandatory; overscroll-behavior: contain;
+            scrollbar-width: none; background: var(--bg); outline: none;
+        }
+        .shorts-viewer::-webkit-scrollbar { display: none; }
+        body.nav-collapsed .shorts-viewer { left: 0; }
+        .short {
+            height: 100%; scroll-snap-align: start; scroll-snap-stop: always; position: relative;
+            display: flex; justify-content: center; align-items: center; gap: 14px; padding: 12px 0;
+        }
+        .short-frame {
+            position: relative; height: 100%; aspect-ratio: 9 / 16; max-width: calc(100% - 90px);
+            border-radius: 14px; overflow: hidden; background: #000 center / cover no-repeat;
+        }
+        .short-frame iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; background: #000; }
+        .short-touch { position: absolute; inset: 0; z-index: 2; cursor: pointer; -webkit-tap-highlight-color: transparent; }
+        .short-paused {
+            position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); z-index: 3; pointer-events: none;
+            width: 72px; height: 72px; border-radius: 50%; background: rgba(0,0,0,.55); display: none;
+            align-items: center; justify-content: center; font-size: 28px;
+        }
+        .short.paused .short-paused { display: flex; }
+        .short-loading { position: absolute; top: 50%; left: 50%; margin: -18px 0 0 -18px; z-index: 3; pointer-events: none; }
+        .short.ready .short-loading { display: none; }
+        .short-mute {
+            position: absolute; top: 12px; right: 12px; z-index: 4; width: 40px; height: 40px; border-radius: 50%;
+            border: 0; background: rgba(0,0,0,.5); cursor: pointer; font-size: 16px;
+        }
+        .short-mute.hint { background: var(--accent); }
+        .short-info {
+            position: absolute; left: 0; right: 0; bottom: 0; z-index: 3; pointer-events: none;
+            padding: 48px 14px 18px; background: linear-gradient(transparent, rgba(0,0,0,.75));
+            text-shadow: 0 1px 2px rgba(0,0,0,.6);
+        }
+        .short-info a { pointer-events: auto; font-weight: 600; font-size: 15px; }
+        .short-info p { margin: 6px 0 0; font-size: 14px; line-height: 1.35; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+        .short-progress { position: absolute; left: 0; right: 0; bottom: 0; height: 3px; z-index: 4; background: rgba(255,255,255,.25); }
+        .short-progress i { display: block; height: 100%; width: 0; background: var(--accent); }
+        .short-actions { align-self: flex-end; display: flex; flex-direction: column; gap: 18px; padding-bottom: 12px; z-index: 4; }
+        .short-actions a, .short-actions button {
+            display: flex; flex-direction: column; align-items: center; gap: 6px; font-size: 12px;
+            background: none; border: 0; padding: 0; cursor: pointer; color: var(--fg);
+        }
+        .short-actions i {
+            width: 48px; height: 48px; border-radius: 50%; background: var(--bg2);
+            display: flex; align-items: center; justify-content: center; font-size: 18px;
+        }
+        .short-actions a:hover i, .short-actions button:hover i { background: var(--bg3); }
+        .shorts-nav { position: fixed; right: 24px; top: 50%; transform: translateY(-50%); z-index: 6; display: flex; flex-direction: column; gap: 12px; }
+        .shorts-nav button { width: 52px; height: 52px; border-radius: 50%; border: 0; background: var(--bg2); cursor: pointer; font-size: 18px; }
+        .shorts-nav button:hover { background: var(--bg3); }
+        .shorts-empty { height: 100%; display: flex; align-items: center; justify-content: center; }
+        @media (max-width: 1000px) {
+            .shorts-viewer { left: 0; }
+            .shorts-nav { display: none; }
+        }
+        @media (max-width: 640px) {
+            .short { padding: 0; }
+            .short-frame { border-radius: 0; max-width: 100%; width: 100%; aspect-ratio: auto; }
+            .short-info { padding-right: 76px; padding-bottom: 22px; }
+            .short-actions { position: absolute; right: 8px; bottom: 26px; padding: 0; }
+            .short-actions i { background: rgba(0,0,0,.45); }
+            .short-actions span { text-shadow: 0 1px 2px #000; }
+        }
+
         #scrim { display: none; }
         @media (max-width: 1000px) {
             main { margin-left: 0; padding: 12px max(12px, env(safe-area-inset-right)) calc(40px + env(safe-area-inset-bottom)) max(12px, env(safe-area-inset-left)); }
@@ -153,6 +221,7 @@
 
 <nav id="nav">
     <a href="#/home" data-route="home"><i class="fa-solid fa-house"></i>Home</a>
+    <a href="#/shorts" data-route="shorts"><i class="fa-solid fa-clapperboard"></i>Shorts</a>
     <a href="#/subscriptions" data-route="subscriptions"><i class="fa-solid fa-layer-group"></i>Subscriptions</a>
     <a href="#/following" data-route="following"><i class="fa-solid fa-user-check"></i>Following</a>
     <hr>
@@ -230,6 +299,7 @@ function fmtAge(it) {
 const watchHref = url => '/watch?url=' + encodeURIComponent(url);
 const channelHref = url => '#/channel?url=' + encodeURIComponent(url);
 const playlistHref = url => '#/playlist?url=' + encodeURIComponent(url);
+const shortsHref = it => '#/shorts?v=' + encodeURIComponent(it.url) + (it._ch ? '&channel=' + encodeURIComponent(it._ch) : '');
 function isUrl(s) {
     if (/^https?:\/\//i.test(s)) return true;
     return /^[\w-]+(\.[\w-]+)+(\/\S*)?$/.test(s) && !/\s/.test(s);
@@ -252,10 +322,11 @@ function card(it) {
     const badge = it.live ? '<span class="badge live">LIVE</span>' : (it.duration ? `<span class="badge">${fmtDur(it.duration)}</span>` : '');
     const sub = [it.views != null ? fmtNum(it.views) + ' views' : '', fmtAge(it)].filter(Boolean).join(' · ');
     const chan = it.channel ? (it.channel_url ? `<a href="${channelHref(it.channel_url)}" onclick="event.stopPropagation()">${esc(it.channel)}</a>` : esc(it.channel)) : '';
+    const href = it.kind === 'short' ? shortsHref(it) : watchHref(it.url);
     return `<div class="card ${it.kind === 'short' ? 'short' : ''}" data-play='${esc(JSON.stringify(it))}'>
-        <a class="thumb" href="${watchHref(it.url)}">${it.thumb ? `<img loading="lazy" src="${esc(it.thumb)}" referrerpolicy="no-referrer" alt="">` : ''}${badge}</a>
+        <a class="thumb" href="${href}">${it.thumb ? `<img loading="lazy" src="${esc(it.thumb)}" referrerpolicy="no-referrer" alt="">` : ''}${badge}</a>
         <div class="meta"><div>
-            <a href="${watchHref(it.url)}"><p class="title">${esc(it.title)}</p></a>
+            <a href="${href}"><p class="title">${esc(it.title)}</p></a>
             <div class="sub">${chan}${chan && sub ? '<br>' : ''}${sub}</div>
         </div></div></div>`;
 }
@@ -266,7 +337,10 @@ function skeletons(n = 12) {
 main.addEventListener('click', e => {
     const c = e.target.closest('[data-play]');
     const a = e.target.closest('a');
-    if (!c || !a || a.getAttribute('href').startsWith('#')) return;
+    if (!c || !a) return;
+    const href = a.getAttribute('href') || '';
+    if (href.startsWith('#/shorts')) { try { sessionStorage.setItem('xlabyt.shortStart', c.dataset.play); } catch {} return; }
+    if (href.startsWith('#')) return;
     try { rememberPlay(JSON.parse(c.dataset.play)); } catch {}
 });
 
@@ -280,7 +354,7 @@ async function api(params) {
 
 /* ---------- infinite feed ---------- */
 let routeToken = 0;
-function feed(params, {gridClass = '', header = '', emptyMsg = 'Nothing here.', onFirst} = {}) {
+function feed(params, {gridClass = '', header = '', emptyMsg = 'Nothing here.', onFirst, mapItem = x => x} = {}) {
     const token = ++routeToken;
     main.innerHTML = `${header}<div class="grid ${gridClass}" id="grid">${skeletons()}</div><div class="loader" id="more"></div>`;
     const grid = $('#grid'), more = $('#more');
@@ -294,7 +368,7 @@ function feed(params, {gridClass = '', header = '', emptyMsg = 'Nothing here.', 
             const data = await api({...params, page});
             if (token !== routeToken) return;
             if (first) { grid.innerHTML = ''; onFirst?.(data); }
-            grid.insertAdjacentHTML('beforeend', (data.items || []).map(card).join(''));
+            grid.insertAdjacentHTML('beforeend', (data.items || []).map(mapItem).map(card).join(''));
             if (first && !(data.items || []).length) grid.outerHTML = `<div class="empty"><i class="fa-regular fa-face-meh"></i>${emptyMsg}</div>`;
             first = false; page++;
             done = !data.has_more;
@@ -343,6 +417,7 @@ function channelView(url, tab = 'videos') {
     const header = `<div id="chan-head"></div><div class="tabs">${tabs}</div>`;
     feed({kind: 'channel', url, tab}, {
         header, gridClass: tab === 'shorts' ? 'shorts' : '',
+        mapItem: it => (tab === 'shorts' && it.kind !== 'channel' ? {...it, kind: 'short', _ch: url} : it),
         onFirst(d) {
             const name = d.channel || d.title.replace(/ - (Videos|Shorts|Live|Playlists)$/, '');
             const chUrl = d.channel_url || url;
@@ -386,6 +461,187 @@ function homeView() {
     }
 }
 
+/* ---------- shorts viewer ---------- */
+const ytId = url => ((url || '').match(/(?:v=|youtu\.be\/|\/shorts\/)([A-Za-z0-9_-]{11})/) || [])[1] || '';
+function shortsView(p) {
+    const token = ++routeToken;
+    const live = () => token === routeToken;
+    const st = {items: [], seen: new Set(), page: 1, loading: false, done: false, active: -1,
+                q: p.get('q') || '', channel: p.get('channel') || '', muted: store.get('xlabyt.shortsMuted', false), timer: null};
+    main.innerHTML = `<div class="shorts-viewer" id="shorts" tabindex="0"><div class="shorts-empty"><div class="spinner"></div></div></div>
+        <div class="shorts-nav"><button id="sh-up" aria-label="Previous"><i class="fa-solid fa-chevron-up"></i></button>
+        <button id="sh-down" aria-label="Next"><i class="fa-solid fa-chevron-down"></i></button></div>`;
+    const box = $('#shorts');
+    document.title = 'Shorts - {{ app_title }}';
+
+    function add(list) {
+        const fresh = [];
+        for (const it of list) {
+            const id = ytId(it.url) || it.url;
+            if (!it.url || st.seen.has(id)) continue;
+            st.seen.add(id);
+            fresh.push({...it, kind: 'short', id});
+        }
+        if (!fresh.length) return 0;
+        if (!st.items.length) box.innerHTML = '';
+        const base = st.items.length;
+        st.items.push(...fresh);
+        box.insertAdjacentHTML('beforeend', fresh.map((it, k) => slide(it, base + k)).join(''));
+        box.querySelectorAll('.short:not([data-obs])').forEach(el => { el.dataset.obs = 1; io.observe(el); });
+        return fresh.length;
+    }
+    function slide(it, i) {
+        const vert = it.id && it.id.length === 11 ? `url('https://i.ytimg.com/vi/${it.id}/oardefault.jpg'), ` : '';
+        const ch = it.channel_url ? `<a href="${channelHref(it.channel_url)}">${esc(it.channel ? (it.channel.startsWith('@') ? it.channel : '@' + it.channel) : 'Channel')}</a>` : `<b>${esc(it.channel)}</b>`;
+        return `<section class="short" data-i="${i}">
+            <div class="short-frame" style="background-image:${vert}url('${esc(it.thumb)}')">
+                <div class="short-touch"></div>
+                <div class="spinner short-loading"></div>
+                <div class="short-paused"><i class="fa-solid fa-play"></i></div>
+                <button class="short-mute" aria-label="Mute"><i class="fa-solid fa-volume-high"></i></button>
+                <div class="short-info">${ch}<p>${esc(it.title)}</p></div>
+                <div class="short-progress"><i></i></div>
+            </div>
+            <div class="short-actions">
+                <a href="${watchHref(it.url)}" class="sh-open"><i class="fa-solid fa-up-right-from-square"></i><span>Open</span></a>
+                <button class="sh-share"><i class="fa-solid fa-share"></i><span>Share</span></button>
+                ${it.channel_url ? `<a href="${channelHref(it.channel_url)}"><i class="fa-solid fa-user"></i><span>Channel</span></a>` : ''}
+            </div></section>`;
+    }
+
+    async function loadMore() {
+        if (st.loading || st.done || !live()) return;
+        st.loading = true;
+        try {
+            let got = 0;
+            if (st.channel) {
+                const d = await api({kind: 'channel', url: st.channel, tab: 'shorts', page: st.page});
+                got = add(d.items || []); st.done = !d.has_more;
+            } else {
+                const jobs = [api({kind: 'shorts', q: st.q, page: st.page})];
+                // first page: mix in the newest shorts from channels you follow
+                if (st.page === 1 && !st.q) for (const c of follows().slice(0, 10))
+                    jobs.push(api({kind: 'channel', url: c.url, tab: 'shorts'}).then(d => ({items: (d.items || []).slice(0, 5).map(x => ({...x, channel: x.channel || c.name, channel_url: x.channel_url || c.url}))})));
+                const res = await Promise.allSettled(jobs);
+                if (!live()) return;
+                const disc = res[0].status === 'fulfilled' ? res[0].value : {items: [], has_more: false};
+                const followed = res.slice(1).filter(r => r.status === 'fulfilled').flatMap(r => r.value.items);
+                followed.sort(() => Math.random() - .5);
+                const mixed = [];
+                const d = disc.items || [];
+                for (let i = 0; i < Math.max(d.length, followed.length); i++) { if (followed[i]) mixed.push(followed[i]); if (d[i]) mixed.push(d[i]); }
+                got = add(mixed); st.done = !disc.has_more;
+                if (res[0].status === 'rejected' && !st.items.length) throw res[0].reason;
+            }
+            st.page++;
+            if (!st.items.length) box.innerHTML = '<div class="shorts-empty"><div class="empty"><i class="fa-solid fa-clapperboard"></i>No shorts found.</div></div>';
+            else if (!got && !st.done) { st.loading = false; return loadMore(); }
+        } catch (e) {
+            if (live() && !st.items.length) box.innerHTML = `<div class="shorts-empty"><div class="empty"><i class="fa-solid fa-triangle-exclamation"></i>${esc(e.message)}</div></div>`;
+            st.done = true;
+        } finally { st.loading = false; }
+    }
+
+    const io = new IntersectionObserver(es => {
+        for (const e of es) if (e.isIntersecting && e.intersectionRatio > .6) activate(+e.target.dataset.i);
+    }, {root: box, threshold: [.6]});
+
+    function slideEl(i) { return box.querySelector(`.short[data-i="${i}"]`); }
+    function framePlayer(el) {
+        const f = el && el.querySelector('iframe');
+        try { return f && f.contentWindow.shortsIsReady ? f.contentWindow.shortsPlayer() : null; } catch { return null; }
+    }
+    function updateMute(el, p) {
+        const btn = el.querySelector('.short-mute');
+        const m = p ? p.muted : st.muted;
+        btn.innerHTML = `<i class="fa-solid fa-volume-${m ? 'xmark' : 'high'}"></i>`;
+        btn.classList.toggle('hint', m && !st.muted); // auto-muted by the browser: tap to unmute
+    }
+    function activate(i) {
+        if (i === st.active || !live()) return;
+        st.active = i;
+        clearInterval(st.timer);
+        box.querySelectorAll('.short').forEach(el => {
+            const j = +el.dataset.i;
+            if (j !== i) { el.querySelector('iframe')?.remove(); el.classList.remove('ready', 'paused'); el.querySelector('.short-progress i').style.width = '0'; }
+        });
+        const el = slideEl(i), it = st.items[i];
+        if (!el || !it) return;
+        rememberPlay({...it, kind: 'short'});
+        const f = document.createElement('iframe');
+        f.src = '/short?url=' + encodeURIComponent(it.url);
+        f.allow = 'autoplay; fullscreen; picture-in-picture';
+        f.addEventListener('load', () => {
+            const w = f.contentWindow;
+            const start = () => {
+                if (!live() || st.active !== i) return;
+                const pl = w.shortsPlayer();
+                if (!pl) return;
+                el.classList.add('ready');
+                pl.muted = st.muted;
+                const r = pl.play();
+                if (r && r.catch) r.catch(() => { pl.muted = true; updateMute(el, pl); const r2 = pl.play(); if (r2 && r2.catch) r2.catch(() => {}); });
+                updateMute(el, pl);
+                st.timer = setInterval(() => {
+                    if (!live()) return clearInterval(st.timer);
+                    const d = parseFloat(pl.duration) || 0;
+                    el.querySelector('.short-progress i').style.width = d ? Math.min(100, pl.currentTime / d * 100) + '%' : '0';
+                    el.classList.toggle('paused', !!pl.paused);
+                }, 200);
+            };
+            if (w.shortsIsReady) start(); else w.addEventListener('shorts-ready', start, {once: true});
+        });
+        el.querySelector('.short-frame').prepend(f);
+        // warm up the next two so they start faster
+        for (const k of [i + 1, i + 2]) if (st.items[k] && !st.items[k]._warm) { st.items[k]._warm = 1; fetch('/info?url=' + encodeURIComponent(st.items[k].url)).catch(() => {}); }
+        if (i >= st.items.length - 4) loadMore();
+    }
+
+    box.addEventListener('click', e => {
+        const el = e.target.closest('.short');
+        if (!el) return;
+        const p = framePlayer(el);
+        if (e.target.closest('.short-mute')) {
+            st.muted = p ? !p.muted : !st.muted;
+            store.set('xlabyt.shortsMuted', st.muted);
+            if (p) { p.muted = st.muted; if (p.paused) p.play(); }
+            updateMute(el, p);
+        } else if (e.target.closest('.short-touch')) {
+            if (p) p.paused ? p.play() : p.pause();
+        } else if (e.target.closest('.sh-share')) {
+            const it = st.items[+el.dataset.i];
+            const link = location.origin + watchHref(it.url);
+            if (navigator.share) navigator.share({title: it.title, url: link}).catch(() => {});
+            else navigator.clipboard.writeText(link).then(() => { e.target.closest('.sh-share').querySelector('span').textContent = 'Copied'; }).catch(() => {});
+        } else if (e.target.closest('.sh-open')) {
+            const p2 = framePlayer(el); if (p2) p2.pause();
+        }
+    });
+    const step = dir => box.scrollBy({top: dir * box.clientHeight, behavior: 'smooth'});
+    $('#sh-up').onclick = () => step(-1);
+    $('#sh-down').onclick = () => step(1);
+    const onKey = e => {
+        if (!live()) return removeEventListener('keydown', onKey);
+        if (e.target.closest('input, textarea, select')) return;
+        const el = slideEl(st.active), p = el && framePlayer(el);
+        if (e.key === 'ArrowDown' || e.key === 'j') { e.preventDefault(); step(1); }
+        else if (e.key === 'ArrowUp' || e.key === 'k') { e.preventDefault(); step(-1); }
+        else if (e.key === ' ' && p) { e.preventDefault(); p.paused ? p.play() : p.pause(); }
+        else if (e.key === 'm' && el) el.querySelector('.short-mute').click();
+    };
+    addEventListener('keydown', onKey);
+    box.focus({preventScroll: true});
+
+    // start with the short that was clicked, if any
+    const v = p.get('v');
+    if (v) {
+        let first = {url: v, title: '', channel: '', thumb: ''};
+        try { const s = JSON.parse(sessionStorage.getItem('xlabyt.shortStart') || 'null'); if (s && ytId(s.url) === ytId(v)) first = s; } catch {}
+        add([first]);
+    }
+    loadMore();
+}
+
 /* ---------- router ---------- */
 function route() {
     const hash = location.hash.slice(1) || '/home';
@@ -395,6 +651,7 @@ function route() {
     $('#back-btn').hidden = name === 'home';
     document.querySelectorAll('nav a[data-route]').forEach(a => a.classList.toggle('active', a.dataset.route === name));
     document.body.classList.remove('nav-open');
+    document.body.classList.toggle('shorts-mode', name === 'shorts');
     document.title = '{{ app_title }}';
     scrollTo(0, 0);
 
@@ -413,6 +670,7 @@ function route() {
         case 'history': return feed({kind: 'history'});
         case 'watchlater': return feed({kind: 'watchlater'});
         case 'following': return followingFeed();
+        case 'shorts': return shortsView(p);
         case 'recent': return recentView();
         default: return homeView();
     }

@@ -179,6 +179,12 @@ def browse(kind: str, page: int = 1, q: str = '', url: str = '', tab: str = 'vid
         return _fetch(':ythistory', page, cookies=True) | {'title': 'History'}
     if kind == 'watchlater':
         return _fetch(':ytwatchlater', page, cookies=True) | {'title': 'Watch later'}
+    if kind == 'shorts':
+        # Shorts discovery: search results narrowed to shorts (vertical, up to 3 minutes)
+        data = _fetch(_search_source(f'{q} #shorts' if q else '#shorts', page), page, cookies=False)
+        items = [it | {'kind': 'short'} for it in data['items']
+                 if it['kind'] == 'short' or (it['kind'] == 'video' and it.get('duration') and 0 < it['duration'] <= 180 and not it.get('live'))]
+        return data | {'items': items, 'title': 'Shorts'}
     if kind == 'channel':
         if tab not in ('videos', 'shorts', 'streams', 'playlists'): tab = 'videos'
         return _fetch(_channel_source(url, tab), page, cookies=False)

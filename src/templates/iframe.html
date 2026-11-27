@@ -26,6 +26,15 @@
         </style>
     </head>
     <body>
+        {% if shorts %}
+        <script>window.SHORTS_MODE = true;</script>
+        <style>
+            /* Shorts: the parent page draws its own controls */
+            .video-controls-top, .video-controls-bottom, .video-controls-backdrop, .title-bar, #skipsegment { display: none !important; }
+            #player-container { --media-object-fit: contain !important; background: #000; }
+            .media-poster-image { filter: none !important; object-fit: contain !important; }
+        </style>
+        {% endif %}
         
         <div class="container" id="video">
         </div>
@@ -41,5 +50,6 @@
         <script src="{{ url_for('static', filename='audio-visualizer.js') }}"></script>
         
         <script src="{{ url_for('static', filename='script.js') }}"></script>
+        <script>window.shortsPlayer = () => (typeof player !== 'undefined' ? player : null);</script>
     </body>
 </html>

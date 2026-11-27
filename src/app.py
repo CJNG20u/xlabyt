@@ -137,6 +137,13 @@ def iframe():
     return render_template('iframe.html', app_title=app_title, theme_color=theme_color, video_width=video_width, video_height=video_height)
 
 
+@app.route('/short')
+def short_embed():
+    url = get_url(request)
+    if url: preload(url)
+    return render_template('iframe.html', app_title=app_title, theme_color=theme_color, video_width=1080, video_height=1920, shorts=True)
+
+
 @app.route('/thumb')
 def serve_thumbnail():
     url = get_url(request)
