@@ -1,0 +1,10 @@
+# Ignore Python virtual environment files
+**/venv/
+**/env/
+**/.venv/
+**/.venv*/
+**/env*/
+**/data
+**/__pycache__/
+**/.ssl/
+**/cookies.txt

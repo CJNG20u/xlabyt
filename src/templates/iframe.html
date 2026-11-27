@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+        <meta charset="UTF-8" />
+        <meta http-equiv="X-UA-Compatible" content="IE=edge">
+        <meta name="viewport" content="width=device-width, viewport-fit=cover, initial-scale=1.0" />
+        <meta name="color-scheme" content="dark light">
+        <title>{{ app_title }}</title>
+        <meta name="theme-color" content="{{ theme_color }}">
+        <meta property="og:site_name" content="{{app_title}}">
+        <meta name="darkreader-lock">
+
+        <style>@import url("{{ url_for('static', filename='fontawesome/css/all.min.css') }}") layer(fontawesome);</style>
+        <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@videojs/cdn@10.4.0/video-compat.css" type="text/css" />
+        <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" type="text/css" />
+        <style>
+            #player-container
+            {
+                border-radius: 0 !important;
+                --media-border-radius: 0;
+                width: 100vw !important;
+                height: 100vh !important;
+                max-width: none !important;
+                max-height: none !important;
+            }
+        </style>
+    </head>
+    <body>
+        
+        <div class="container" id="video">
+        </div>
+
+        <!-- Video.js -->
+        <script type="module" src="https://cdn.jsdelivr.net/npm/@videojs/cdn@10.4.0/video-compat.js"></script>
+        <script type="module" src="https://cdn.jsdelivr.net/npm/@videojs/cdn@10.4.0/media/hlsjs-video.js"></script>
+        <script type="module" src="https://cdn.jsdelivr.net/npm/@videojs/cdn@10.4.0/ui/menu-radio-group.js"></script>
+        <script type="module" src="https://cdn.jsdelivr.net/npm/@videojs/cdn@10.4.0/ui/menu-checkbox-item.js"></script>
+        <script type="module" src="https://cdn.jsdelivr.net/npm/@videojs/cdn@10.4.0/ui/popover.js"></script>
+        <script type="module" src="https://cdn.jsdelivr.net/npm/@videojs/cdn@10.4.0/ui/time-slider-markers.js"></script>
+        
+        <script src="{{ url_for('static', filename='audio-visualizer.js') }}"></script>
+        
+        <script src="{{ url_for('static', filename='script.js') }}"></script>
+    </body>
+</html>

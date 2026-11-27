@@ -1,0 +1,51 @@
+{
+    "id": "/xlab-yt",
+    "name": "{{ app_title }}",
+    "short_name": "{{ app_title }}",
+    "description": "Browse and watch YouTube with yt-dlp",
+    "categories": ["video", "entertainment"],
+    "start_url": "/?source=pwa",
+    "display": "standalone",
+    "display_override": ["standalone", "minimal-ui"],
+    "orientation": "any",
+    "dir": "ltr",
+    "lang": "en",
+    "scope": "/",
+    "theme_color": "{{ '#000000' if amoled_bg else '#0f0f0f' }}",
+    "background_color": "{{ '#000000' if amoled_bg else '#0f0f0f' }}",
+    "prefer_related_applications": false,
+    "icons": [
+        { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+        { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+        { "src": "/icon-maskable-192.png", "sizes": "192x192", "type": "image/png", "purpose": "maskable" },
+        { "src": "/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" },
+        { "src": "/favicon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+    ],
+    "shortcuts": [
+        {
+            "name": "Search",
+            "url": "/?source=shortcut#/search",
+            "icons": [{ "src": "/icon-96.png", "sizes": "96x96", "type": "image/png" }]
+        },
+        {
+            "name": "Subscriptions",
+            "url": "/?source=shortcut#/subscriptions",
+            "icons": [{ "src": "/icon-96.png", "sizes": "96x96", "type": "image/png" }]
+        },
+        {
+            "name": "Following",
+            "url": "/?source=shortcut#/following",
+            "icons": [{ "src": "/icon-96.png", "sizes": "96x96", "type": "image/png" }]
+        }
+    ],
+    "share_target": {
+        "action": "/watch",
+        "method": "GET",
+        "enctype": "application/x-www-form-urlencoded",
+        "params": {
+            "title": "title",
+            "text": "url",
+            "url": "link"
+        }
+    }
+}

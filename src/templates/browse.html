@@ -1,0 +1,465 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, viewport-fit=cover, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="{{ app_title }}">
+    <meta name="theme-color" content="{{ '#000000' if amoled_bg else '#0f0f0f' }}">
+    <link rel="manifest" href="/manifest.json">
+    <link rel="apple-touch-icon" href="/icon-180.png">
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+    <link rel="icon" type="image/png" sizes="32x32" href="/favicon32.png">
+    <title>{{ app_title }}</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='fontawesome/css/all.min.css') }}" />
+    <style>
+        :root {
+            --accent: {{ theme_color }};
+            --bg: {{ "#000" if amoled_bg else "#0f0f0f" }};
+            --bg2: {{ "#111" if amoled_bg else "#212121" }};
+            --bg3: {{ "#1c1c1c" if amoled_bg else "#2c2c2c" }};
+            --fg: #f1f1f1;
+            --muted: #aaa;
+            --sat: env(safe-area-inset-top, 0px);
+            --top: calc(56px + var(--sat));
+            --side: 220px;
+        }
+        * { box-sizing: border-box; }
+        html, body { margin: 0; background: var(--bg); color: var(--fg); font-family: Roboto, "Segoe UI", Arial, sans-serif; }
+        a { color: inherit; text-decoration: none; }
+        button { font: inherit; color: inherit; }
+
+        /* ---------- top bar ---------- */
+        header {
+            position: fixed; inset: 0 0 auto 0; height: var(--top); z-index: 10;
+            display: flex; align-items: center; gap: 12px;
+            padding: var(--sat) max(16px, env(safe-area-inset-right)) 0 max(16px, env(safe-area-inset-left));
+            background: var(--bg);
+        }
+        [hidden] { display: none !important; }
+        .icon-btn { background: none; border: 0; width: 40px; height: 40px; border-radius: 50%; cursor: pointer; font-size: 18px; flex-shrink: 0; }
+        .icon-btn:hover { background: var(--bg3); }
+        .logo { display: flex; align-items: center; gap: 6px; font-weight: 700; font-size: 18px; white-space: nowrap; }
+        .logo img { width: 30px; height: 30px; }
+        .search { flex: 1; min-width: 0; max-width: 640px; margin: 0 auto; display: flex; height: 40px; }
+        .search input {
+            flex: 1; min-width: 0; background: var(--bg); color: var(--fg); border: 1px solid #303030; border-right: 0;
+            border-radius: 20px 0 0 20px; padding: 0 16px; font-size: 16px; outline: none;
+        }
+        .search input:focus { border-color: var(--accent); }
+        .search button { width: 64px; border: 1px solid #303030; background: var(--bg2); border-radius: 0 20px 20px 0; cursor: pointer; }
+        .search button:hover { background: var(--bg3); }
+
+        /* ---------- sidebar ---------- */
+        nav {
+            position: fixed; top: var(--top); bottom: 0; left: 0; width: var(--side); overflow-y: auto;
+            padding: 8px 8px calc(8px + env(safe-area-inset-bottom)) max(8px, env(safe-area-inset-left));
+            background: var(--bg); z-index: 9; transition: transform .2s;
+        }
+        nav a { display: flex; align-items: center; gap: 20px; padding: 10px 12px; border-radius: 10px; font-size: 14px; }
+        nav a i { width: 20px; text-align: center; }
+        nav a:hover { background: var(--bg2); }
+        nav a.active { background: var(--bg3); font-weight: 600; }
+        nav hr { border: 0; border-top: 1px solid #303030; margin: 10px 0; }
+        nav h4 { margin: 8px 12px; font-size: 15px; }
+        nav .ch-link img { width: 24px; height: 24px; border-radius: 50%; object-fit: cover; background: var(--bg3); }
+        nav .ch-link span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        nav small { display: block; color: var(--muted); padding: 6px 12px; font-size: 12px; line-height: 1.4; }
+        nav small a { display: inline; padding: 0; color: var(--accent); }
+        body.nav-collapsed nav { transform: translateX(-100%); }
+        body.nav-collapsed main { margin-left: 0; }
+
+        /* ---------- content ---------- */
+        main { margin-top: var(--top); margin-left: var(--side); padding: 16px max(24px, env(safe-area-inset-right)) calc(40px + env(safe-area-inset-bottom)) 24px; min-height: calc(100vh - var(--top)); }
+        .page-title { font-size: 20px; margin: 4px 0 16px; }
+        .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 32px 16px; }
+        .grid.shorts { grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); }
+
+        .card { display: flex; flex-direction: column; gap: 10px; cursor: pointer; min-width: 0; }
+        .thumb { position: relative; aspect-ratio: 16/9; border-radius: 12px; overflow: hidden; background: var(--bg2); }
+        .shorts .thumb, .card.short .thumb { aspect-ratio: 9/16; }
+        .thumb img { width: 100%; height: 100%; object-fit: cover; display: block; transition: transform .2s; }
+        .card:hover .thumb img { transform: scale(1.03); }
+        .badge { position: absolute; right: 6px; bottom: 6px; background: rgba(0,0,0,.8); font-size: 12px; font-weight: 600; padding: 2px 5px; border-radius: 4px; }
+        .badge.live { background: #c00; }
+        .badge.pl { inset: 0 0 0 auto; width: 40%; border-radius: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; font-size: 13px; }
+        .meta { display: flex; gap: 12px; }
+        .meta .title { font-size: 15px; font-weight: 600; line-height: 1.35; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; margin: 0 0 4px; }
+        .meta .sub { font-size: 13px; color: var(--muted); line-height: 1.5; }
+        .meta .sub a:hover { color: var(--fg); }
+
+        .card.channel-card { align-items: center; text-align: center; justify-content: center; }
+        .card.channel-card .avatar { width: 136px; height: 136px; border-radius: 50%; overflow: hidden; background: var(--bg2); }
+        .card.channel-card .avatar img { width: 100%; height: 100%; object-fit: cover; }
+
+        .chan-head { display: flex; align-items: center; gap: 24px; margin-bottom: 16px; flex-wrap: wrap; }
+        .chan-banner { width: 100%; aspect-ratio: 6.2/1; border-radius: 16px; background: var(--bg2) center/cover; margin-bottom: 16px; }
+        .chan-head img { width: 120px; height: 120px; border-radius: 50%; object-fit: cover; background: var(--bg2); }
+        .chan-head h1 { margin: 0 0 6px; font-size: 32px; }
+        .chan-head .sub { color: var(--muted); font-size: 14px; }
+        .pill { border: 0; border-radius: 18px; padding: 8px 16px; cursor: pointer; font-weight: 600; background: var(--fg); color: #0f0f0f; }
+        .pill.on { background: var(--bg3); color: var(--fg); }
+        .tabs { display: flex; gap: 8px; border-bottom: 1px solid #303030; margin-bottom: 20px; overflow-x: auto; }
+        .tabs a { padding: 10px 14px; font-weight: 600; color: var(--muted); border-bottom: 2px solid transparent; white-space: nowrap; }
+        .tabs a.active { color: var(--fg); border-color: var(--fg); }
+
+        .empty { text-align: center; color: var(--muted); padding: 60px 20px; max-width: 560px; margin: 0 auto; line-height: 1.6; }
+        .empty i { font-size: 48px; display: block; margin-bottom: 16px; color: var(--accent); }
+        .empty code { background: var(--bg2); padding: 2px 6px; border-radius: 4px; }
+        .loader { display: flex; justify-content: center; padding: 30px; color: var(--muted); }
+        .spinner { width: 36px; height: 36px; border: 3px solid var(--bg3); border-top-color: var(--accent); border-radius: 50%; animation: spin .8s linear infinite; }
+        @keyframes spin { to { transform: rotate(360deg); } }
+
+        .skeleton .thumb { animation: pulse 1.2s ease-in-out infinite; }
+        .skeleton .line { height: 12px; border-radius: 6px; background: var(--bg2); margin: 6px 0; animation: pulse 1.2s ease-in-out infinite; }
+        @keyframes pulse { 50% { opacity: .5; } }
+
+        #scrim { display: none; }
+        @media (max-width: 1000px) {
+            main { margin-left: 0; padding: 12px max(12px, env(safe-area-inset-right)) calc(40px + env(safe-area-inset-bottom)) max(12px, env(safe-area-inset-left)); }
+            nav { transform: translateX(-100%); }
+            body.nav-open nav { transform: none; }
+            body.nav-open #scrim { display: block; position: fixed; inset: var(--top) 0 0 0; background: rgba(0,0,0,.5); z-index: 8; }
+            body.nav-collapsed nav { transform: translateX(-100%); }
+        }
+        @media (max-width: 640px) {
+            .logo span { display: none; }
+            header { gap: 4px; padding: 0 6px; }
+            .icon-btn { width: 36px; height: 36px; }
+            .search button { width: 48px; }
+            .grid { grid-template-columns: 1fr; gap: 20px; }
+            .grid.shorts { grid-template-columns: repeat(2, 1fr); }
+            .thumb { border-radius: 0; margin: 0 -12px; }
+            .shorts .thumb { border-radius: 10px; margin: 0; }
+            .chan-head h1 { font-size: 22px; }
+            .chan-head img { width: 72px; height: 72px; }
+        }
+    </style>
+</head>
+<body data-pwa-home>
+<header>
+    <button class="icon-btn pwa-back" id="back-btn" aria-label="Back" onclick="xlabBack()" hidden><i class="fa-solid fa-arrow-left"></i></button>
+    <button class="icon-btn" id="menu-btn" aria-label="Menu"><i class="fa-solid fa-bars"></i></button>
+    <a class="logo" href="#/home"><img src="/favicon.svg" alt=""><span>{{ app_title }}</span></a>
+    <form class="search" id="search-form" autocomplete="off">
+        <input id="q" type="search" placeholder="Search or paste a link" enterkeyhint="search">
+        <button type="submit" aria-label="Search"><i class="fa-solid fa-magnifying-glass"></i></button>
+    </form>
+    <button class="icon-btn" id="paste-btn" title="Play link from clipboard"><i class="fa-solid fa-paste"></i></button>
+</header>
+
+<nav id="nav">
+    <a href="#/home" data-route="home"><i class="fa-solid fa-house"></i>Home</a>
+    <a href="#/subscriptions" data-route="subscriptions"><i class="fa-solid fa-layer-group"></i>Subscriptions</a>
+    <a href="#/following" data-route="following"><i class="fa-solid fa-user-check"></i>Following</a>
+    <hr>
+    <a href="#/history" data-route="history"><i class="fa-solid fa-clock-rotate-left"></i>History</a>
+    <a href="#/watchlater" data-route="watchlater"><i class="fa-regular fa-clock"></i>Watch later</a>
+    <a href="#/recent" data-route="recent"><i class="fa-solid fa-play"></i>Recently played here</a>
+    <hr>
+    <h4>Followed channels</h4>
+    <div id="nav-channels"></div>
+    <hr>
+    {% if not has_cookies %}
+    <small>No <code>cookies.txt</code> found — Subscriptions, History and Watch later from your YouTube account are off. "Following" works without an account.</small>
+    {% endif %}
+    <a href="javascript:void(0)" data-pwa-install hidden onclick="xlabInstall()"><i class="fa-solid fa-mobile-screen-button"></i>Install app</a>
+    <a href="/classic"><i class="fa-solid fa-link"></i>Classic player page</a>
+</nav>
+<div id="scrim"></div>
+
+<main id="main"></main>
+
+<script>
+// carry over data saved under the old ytweb name
+try { for (const k of ['follows', 'recent', 'autoplay', 'installDismissed']) { const o = localStorage.getItem('ytweb.' + k); if (o !== null && localStorage.getItem('xlabyt.' + k) === null) localStorage.setItem('xlabyt.' + k, o); } } catch {}
+const HAS_COOKIES = {{ 'true' if has_cookies else 'false' }};
+const $ = (s, el = document) => el.querySelector(s);
+const main = $('#main');
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+/* ---------- local storage (follows + recently played) ---------- */
+const store = {
+    get(k, d) { try { return JSON.parse(localStorage.getItem(k)) ?? d; } catch { return d; } },
+    set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} },
+};
+const follows = () => store.get('xlabyt.follows', []);
+const isFollowing = url => follows().some(c => sameChannel(c.url, url));
+function sameChannel(a, b) { return (a || '').replace(/\/+$/, '').toLowerCase() === (b || '').replace(/\/+$/, '').toLowerCase(); }
+function toggleFollow(ch) {
+    let f = follows();
+    if (f.some(c => sameChannel(c.url, ch.url))) f = f.filter(c => !sameChannel(c.url, ch.url));
+    else f.unshift(ch);
+    store.set('xlabyt.follows', f);
+    renderNavChannels();
+}
+function rememberPlay(item) {
+    let r = store.get('xlabyt.recent', []).filter(x => x.url !== item.url);
+    r.unshift(item);
+    store.set('xlabyt.recent', r.slice(0, 200));
+}
+
+/* ---------- formatting ---------- */
+function fmtDur(s) {
+    if (!s) return '';
+    s = Math.round(s);
+    const h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60), sec = s % 60;
+    return (h ? h + ':' + String(m).padStart(2, '0') : m) + ':' + String(sec).padStart(2, '0');
+}
+function fmtNum(n) {
+    if (n == null) return '';
+    if (n >= 1e9) return (n / 1e9).toFixed(1).replace(/\.0$/, '') + 'B';
+    if (n >= 1e6) return (n / 1e6).toFixed(1).replace(/\.0$/, '') + 'M';
+    if (n >= 1e3) return (n / 1e3).toFixed(n >= 1e4 ? 0 : 1).replace(/\.0$/, '') + 'K';
+    return String(n);
+}
+function fmtAge(it) {
+    let t = it.timestamp;
+    if (!t && it.upload_date) { const d = it.upload_date; t = Date.UTC(+d.slice(0, 4), +d.slice(4, 6) - 1, +d.slice(6, 8)) / 1000; }
+    if (!t) return '';
+    const s = Date.now() / 1000 - t;
+    const units = [[31536000, 'year'], [2592000, 'month'], [604800, 'week'], [86400, 'day'], [3600, 'hour'], [60, 'minute']];
+    for (const [u, n] of units) if (s >= u) { const v = Math.floor(s / u); return `${v} ${n}${v > 1 ? 's' : ''} ago`; }
+    return 'just now';
+}
+
+/* ---------- links ---------- */
+const watchHref = url => '/watch?url=' + encodeURIComponent(url);
+const channelHref = url => '#/channel?url=' + encodeURIComponent(url);
+const playlistHref = url => '#/playlist?url=' + encodeURIComponent(url);
+function isUrl(s) {
+    if (/^https?:\/\//i.test(s)) return true;
+    return /^[\w-]+(\.[\w-]+)+(\/\S*)?$/.test(s) && !/\s/.test(s);
+}
+
+/* ---------- cards ---------- */
+function card(it) {
+    if (it.kind === 'channel') {
+        return `<a class="card channel-card" href="${channelHref(it.url)}">
+            <div class="avatar">${it.thumb ? `<img loading="lazy" src="${esc(it.thumb)}" referrerpolicy="no-referrer" alt="">` : ''}</div>
+            <div class="meta" style="justify-content:center"><div><p class="title">${esc(it.title)}</p><div class="sub">Channel</div></div></div></a>`;
+    }
+    if (it.kind === 'playlist') {
+        return `<a class="card" href="${playlistHref(it.url)}">
+            <div class="thumb">${it.thumb ? `<img loading="lazy" src="${esc(it.thumb)}" referrerpolicy="no-referrer" alt="">` : ''}
+            <div class="badge pl"><i class="fa-solid fa-list"></i>${it.count ? esc(it.count) + ' videos' : 'Playlist'}</div></div>
+            <div class="meta"><div><p class="title">${esc(it.title)}</p>
+            <div class="sub">${it.channel ? esc(it.channel) + ' · ' : ''}View full playlist</div></div></div></a>`;
+    }
+    const badge = it.live ? '<span class="badge live">LIVE</span>' : (it.duration ? `<span class="badge">${fmtDur(it.duration)}</span>` : '');
+    const sub = [it.views != null ? fmtNum(it.views) + ' views' : '', fmtAge(it)].filter(Boolean).join(' · ');
+    const chan = it.channel ? (it.channel_url ? `<a href="${channelHref(it.channel_url)}" onclick="event.stopPropagation()">${esc(it.channel)}</a>` : esc(it.channel)) : '';
+    return `<div class="card ${it.kind === 'short' ? 'short' : ''}" data-play='${esc(JSON.stringify(it))}'>
+        <a class="thumb" href="${watchHref(it.url)}">${it.thumb ? `<img loading="lazy" src="${esc(it.thumb)}" referrerpolicy="no-referrer" alt="">` : ''}${badge}</a>
+        <div class="meta"><div>
+            <a href="${watchHref(it.url)}"><p class="title">${esc(it.title)}</p></a>
+            <div class="sub">${chan}${chan && sub ? '<br>' : ''}${sub}</div>
+        </div></div></div>`;
+}
+function skeletons(n = 12) {
+    return Array.from({length: n}, () => `<div class="card skeleton"><div class="thumb"></div><div><div class="line" style="width:90%"></div><div class="line" style="width:60%"></div></div></div>`).join('');
+}
+// Record plays so "Recently played here" works, whichever link was clicked.
+main.addEventListener('click', e => {
+    const c = e.target.closest('[data-play]');
+    const a = e.target.closest('a');
+    if (!c || !a || a.getAttribute('href').startsWith('#')) return;
+    try { rememberPlay(JSON.parse(c.dataset.play)); } catch {}
+});
+
+/* ---------- API ---------- */
+async function api(params) {
+    const r = await fetch('/api/browse?' + new URLSearchParams(params));
+    const data = await r.json().catch(() => ({error: 'Bad response from server'}));
+    if (!r.ok) throw Object.assign(new Error(data.error || r.statusText), data);
+    return data;
+}
+
+/* ---------- infinite feed ---------- */
+let routeToken = 0;
+function feed(params, {gridClass = '', header = '', emptyMsg = 'Nothing here.', onFirst} = {}) {
+    const token = ++routeToken;
+    main.innerHTML = `${header}<div class="grid ${gridClass}" id="grid">${skeletons()}</div><div class="loader" id="more"></div>`;
+    const grid = $('#grid'), more = $('#more');
+    let page = 1, loading = false, done = false, first = true;
+
+    async function load() {
+        if (loading || done) return;
+        loading = true;
+        if (!first) more.innerHTML = '<div class="spinner"></div>';
+        try {
+            const data = await api({...params, page});
+            if (token !== routeToken) return;
+            if (first) { grid.innerHTML = ''; onFirst?.(data); }
+            grid.insertAdjacentHTML('beforeend', (data.items || []).map(card).join(''));
+            if (first && !(data.items || []).length) grid.outerHTML = `<div class="empty"><i class="fa-regular fa-face-meh"></i>${emptyMsg}</div>`;
+            first = false; page++;
+            done = !data.has_more;
+            more.innerHTML = '';
+            if (!done) requestAnimationFrame(() => { if (more.getBoundingClientRect().top < innerHeight + 600) load(); });
+        } catch (e) {
+            if (token !== routeToken) return;
+            const msg = e.needs_cookies
+                ? `This needs your YouTube account. Export your YouTube cookies to <code>cookies.txt</code> and mount it at <code>/app/cookies.txt</code>, then restart.<br><br>No account? Use <a href="#/following" style="color:var(--accent)">Following</a> — follow channels from their page and their uploads show up here.`
+                : esc(e.message);
+            if (first) grid.outerHTML = `<div class="empty"><i class="fa-solid fa-triangle-exclamation"></i>${msg}</div>`;
+            else more.innerHTML = `<span>${esc(e.message)}</span>`;
+            done = true;
+        } finally { loading = false; }
+    }
+    const io = new IntersectionObserver(es => { if (es[0].isIntersecting) load(); }, {rootMargin: '600px'});
+    io.observe(more);
+    load();
+}
+
+/* ---------- views ---------- */
+async function followingFeed(title = 'Following') {
+    const token = ++routeToken;
+    const chans = follows();
+    if (!chans.length) {
+        main.innerHTML = `<div class="empty"><i class="fa-solid fa-user-plus"></i>
+            You're not following any channels yet.<br>Search for something, open a channel, and hit <b>Follow</b> — their newest uploads will show up here.</div>`;
+        return;
+    }
+    main.innerHTML = `<h2 class="page-title">${title}</h2><div class="grid" id="grid">${skeletons()}</div>`;
+    const results = await Promise.allSettled(chans.slice(0, 30).map(c => api({kind: 'channel', url: c.url, tab: 'videos'})));
+    if (token !== routeToken) return;
+    // flat channel listings rarely include dates, so interleave newest-first per channel
+    const lists = results.map((r, i) => r.status === 'fulfilled'
+        ? (r.value.items || []).slice(0, 12).map(it => ({...it, channel: it.channel || chans[i].name, channel_url: it.channel_url || chans[i].url}))
+        : []);
+    const items = [];
+    for (let i = 0; i < 12; i++) for (const l of lists) if (l[i]) items.push(l[i]);
+    items.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+    $('#grid').innerHTML = items.map(card).join('') || '<div class="empty">Could not load your channels.</div>';
+}
+
+function channelView(url, tab = 'videos') {
+    const tabs = [['videos', 'Videos'], ['shorts', 'Shorts'], ['streams', 'Live'], ['playlists', 'Playlists']]
+        .map(([t, n]) => `<a class="${t === tab ? 'active' : ''}" href="${channelHref(url)}&tab=${t}">${n}</a>`).join('');
+    const header = `<div id="chan-head"></div><div class="tabs">${tabs}</div>`;
+    feed({kind: 'channel', url, tab}, {
+        header, gridClass: tab === 'shorts' ? 'shorts' : '',
+        onFirst(d) {
+            const name = d.channel || d.title.replace(/ - (Videos|Shorts|Live|Playlists)$/, '');
+            const chUrl = d.channel_url || url;
+            document.title = name + ' - {{ app_title }}';
+            const on = isFollowing(chUrl);
+            $('#chan-head').innerHTML = `${d.banner ? `<div class="chan-banner" style="background-image:url('${esc(d.banner)}')"></div>` : ''}
+                <div class="chan-head">${d.avatar ? `<img src="${esc(d.avatar)}" referrerpolicy="no-referrer" alt="">` : ''}
+                <div><h1>${esc(name)}</h1><div class="sub">${d.subscribers ? fmtNum(d.subscribers) + ' subscribers' : ''}</div>
+                <div style="margin-top:12px"><button class="pill ${on ? 'on' : ''}" id="follow-btn">${on ? 'Following' : 'Follow'}</button></div></div></div>`;
+            $('#follow-btn').onclick = () => {
+                toggleFollow({url: chUrl, name, avatar: d.avatar || ''});
+                const now = isFollowing(chUrl);
+                $('#follow-btn').textContent = now ? 'Following' : 'Follow';
+                $('#follow-btn').classList.toggle('on', now);
+            };
+        },
+    });
+}
+
+function recentView() {
+    ++routeToken;
+    const r = store.get('xlabyt.recent', []);
+    main.innerHTML = r.length
+        ? `<h2 class="page-title">Recently played here <button class="pill on" style="font-size:12px;margin-left:10px" id="clear-recent">Clear</button></h2><div class="grid">${r.map(card).join('')}</div>`
+        : `<div class="empty"><i class="fa-solid fa-play"></i>Videos you play from this page will show up here.</div>`;
+    $('#clear-recent')?.addEventListener('click', () => { store.set('xlabyt.recent', []); recentView(); });
+}
+
+function homeView() {
+    if (HAS_COOKIES) {
+        feed({kind: 'home'}, {emptyMsg: 'YouTube returned no recommendations. Try Subscriptions or search.'});
+    } else if (follows().length) {
+        followingFeed('Latest from channels you follow');
+    } else {
+        ++routeToken;
+        main.innerHTML = `<div class="empty"><img src="/favicon.svg" alt="" style="width:72px;height:72px;display:block;margin:0 auto 16px">
+            <b>Search for anything</b> above, or paste any video link.<br><br>
+            Follow channels to fill this page with their latest uploads. To get your real YouTube home feed and subscriptions,
+            mount your exported YouTube <code>cookies.txt</code> at <code>/app/cookies.txt</code>.</div>`;
+        $('#q').focus();
+    }
+}
+
+/* ---------- router ---------- */
+function route() {
+    const hash = location.hash.slice(1) || '/home';
+    const [path, qs] = hash.split('?');
+    const p = new URLSearchParams(qs || '');
+    const name = path.replace(/^\//, '') || 'home';
+    $('#back-btn').hidden = name === 'home';
+    document.querySelectorAll('nav a[data-route]').forEach(a => a.classList.toggle('active', a.dataset.route === name));
+    document.body.classList.remove('nav-open');
+    document.title = '{{ app_title }}';
+    scrollTo(0, 0);
+
+    switch (name) {
+        case 'search':
+            $('#q').value = p.get('q') || '';
+            document.title = (p.get('q') || 'Search') + ' - {{ app_title }}';
+            return feed({kind: 'search', q: p.get('q') || ''}, {emptyMsg: 'No results.'});
+        case 'channel': return channelView(p.get('url'), p.get('tab') || 'videos');
+        case 'playlist':
+            return feed({kind: 'playlist', url: p.get('url')}, {
+                header: '<h2 class="page-title" id="pl-title"></h2>',
+                onFirst: d => { $('#pl-title').textContent = d.title || 'Playlist'; },
+            });
+        case 'subscriptions': return feed({kind: 'subscriptions'});
+        case 'history': return feed({kind: 'history'});
+        case 'watchlater': return feed({kind: 'watchlater'});
+        case 'following': return followingFeed();
+        case 'recent': return recentView();
+        default: return homeView();
+    }
+}
+addEventListener('hashchange', route);
+
+/* ---------- search / paste ---------- */
+function go(input) {
+    const v = input.trim();
+    if (!v) return;
+    if (isUrl(v)) {
+        const url = /^https?:/i.test(v) ? v : 'https://' + v;
+        // channel / playlist links open in the browser, everything else goes to the player
+        if (/youtube\.com\/(@|channel\/|c\/|user\/)/i.test(url)) location.hash = channelHref(url).slice(1);
+        else if (/youtube\.com\/playlist\?/i.test(url)) location.hash = playlistHref(url).slice(1);
+        else location.href = watchHref(url);
+        return;
+    }
+    location.hash = '/search?q=' + encodeURIComponent(v);
+}
+$('#search-form').addEventListener('submit', e => { e.preventDefault(); $('#q').blur(); go($('#q').value); });
+$('#paste-btn').addEventListener('click', async () => {
+    try { go(await navigator.clipboard.readText()); } catch { $('#q').focus(); }
+});
+
+/* ---------- nav ---------- */
+function renderNavChannels() {
+    const f = follows();
+    $('#nav-channels').innerHTML = f.length
+        ? f.map(c => `<a class="ch-link" href="${channelHref(c.url)}">${c.avatar ? `<img src="${esc(c.avatar)}" referrerpolicy="no-referrer" alt="">` : '<i class="fa-solid fa-circle-user"></i>'}<span>${esc(c.name)}</span></a>`).join('')
+        : '<small>Follow channels to see them here.</small>';
+}
+$('#menu-btn').addEventListener('click', () => {
+    if (innerWidth <= 1000) document.body.classList.toggle('nav-open');
+    else document.body.classList.toggle('nav-collapsed');
+});
+$('#scrim').addEventListener('click', () => document.body.classList.remove('nav-open'));
+
+// Support /browse?q=... and share-target style ?url=... links
+(() => {
+    const p = new URLSearchParams(location.search);
+    if (p.get('url') || p.get('v')) return go(p.get('url') || p.get('v'));
+    if (p.get('q')) { history.replaceState(null, '', '/#/search?q=' + encodeURIComponent(p.get('q'))); }
+})();
+renderNavChannels();
+route();
+</script>
+<script src="{{ url_for('static', filename='pwa.js') }}"></script>
+</body>
+</html>

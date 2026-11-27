@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, viewport-fit=cover, initial-scale=1.0" />
+        <meta name="mobile-web-app-capable" content="yes">
+        <meta name="apple-mobile-web-app-capable" content="yes">
+        <meta name="theme-color" content="{{ theme_color }}">
+        <meta name="color-scheme" content="dark light">
+        <title>{{ app_title }}</title>
+        <link rel="stylesheet" href="{{ url_for('static', filename='fontawesome/css/all.min.css') }}" />
+        <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" />
+        <link rel="icon" type="image/png" href="favicon.svg">
+        <link rel="apple-touch-icon" href="/favicon512.png">
+        <link rel="manifest" href="/manifest.json">
+        <meta name="theme-color" content="{{ theme_color }}">
+        <style>
+            html {
+                --theme-bg: {{ "#000" if amoled_bg else "#1a1a1a" }};
+                --theme-bg-light: {{ "#000" if amoled_bg else "#272727" }};
+                --theme-fg: {{ "#555" if amoled_bg else "#999" }};
+            }
+        </style>
+    </head>
+    <body>
+    
+        <div style="display: inline-block; text-align: center; width: 100%; margin-bottom: 50px;" class="non-video">
+            <img src="favicon.svg" alt="" height="250px">
+            <h1 style="margin-top: 0; margin-bottom: 100px; color: {{ theme_color }};">{{ app_title }}</h1>
+            <div id="main-input">
+                <input type="text" id="url" name="url" placeholder="Search / Paste URL / click enter" autofocus/>
+                <button onclick="handlePlayButtonClick()" id="submit">
+                    <i class="fa-solid fa-play"></i>
+                </button>
+            </div>
+        </div>
+        
+        <div id="expandable-menu-container">
+            <button id="expand-button" class="expand-button" aria-label="Menu">
+                <i class="fa-solid fa-chevron-up"></i>
+            </button>
+            <div id="expandable-content" class="expandable-content">
+                <ul>
+                    <li><a href="javascript:void(0)" onclick="copyExtensionScript(event)" id="script-copy"><i class="fa-solid fa-file-code"></i> Copy extension JS</a></li>
+                    <li><a href="/extension.user.js"><i class="fa-solid fa-puzzle-piece"></i> Install userscript</a></li>
+                    <li>
+                        <a href="https://github.com/CJNG20u/xlabyt" target="_blank">
+                            <span title="{{app_version}}"><i class="fa-solid fa-circle-info"></i> Version:<br><b>{{app_version}}</b><br></span>
+                            <span title="{{ydl_version}}">YT-DLP: <b>{{ydl_version}}</b><br></span>
+                            <span title="{{js_runtime_version[4:]}}">{{js_runtime_version[:4]}}: <b>{{js_runtime_version[4:]}}</b><br></span>
+                            <span title="{{ffmpeg_version}}">FFmpeg: <b>{{ffmpeg_version}}</b><br></span>
+                        </a>
+                    </li>
+                </ul>
+            </div>
+        </div>
+        <script>
+            const expandButton = document.getElementById('expand-button');
+            const expandableContent = document.getElementById('expandable-content');
+            let isExpanded = false;
+            expandButton.addEventListener('click', function(event) {
+                event.stopPropagation();
+                isExpanded = !isExpanded;
+                if (isExpanded)
+                {
+                    expandableContent.style.maxHeight = expandableContent.scrollHeight + "px";
+                    expandButton.classList.add('expanded');
+                }
+                else
+                {
+                    expandableContent.style.maxHeight = "0";
+                    expandButton.classList.remove('expanded');
+                }
+            });
+
+            document.addEventListener('click', function(event) {
+                const expandableMenuContainer = document.getElementById('expandable-menu-container');
+                if (isExpanded && !expandableMenuContainer.contains(event.target))
+                {
+                    expandButton.click();
+                }
+            });
+
+            const urlInput = document.getElementById('url');
+            urlInput.addEventListener('keypress', function(event) {
+                if (event.key === 'Enter') {
+                    event.preventDefault();
+                    handlePlayButtonClick();
+                }
+            });
+
+            function handlePlayButtonClick()
+            {
+                let url = urlInput.value.trim();
+                if (url)
+                {
+                    try
+                    {
+                        const expression = /[-a-zA-Z0-9@:%._\+~#=]{1,256}\.[a-zA-Z0-9()]{1,6}\b([-a-zA-Z0-9()@:%_\+.~#?&//=]*)/gi;
+                        if (!url.match(new RegExp(expression))) throw TypeError();
+                        if (!url.startsWith('http')) url = 'https://' + url;
+                        new URL(url);
+                        window.location.href = '/watch?url=' + encodeURIComponent(url);
+                    }
+                    catch (e)
+                    {
+                        fetch(`/search?q=${encodeURIComponent(url)}`)
+                            .then(response => {
+                                if (!response.ok) return;
+                                response.text().then(data => {
+                                    if (!data) return;
+                                    window.location.href = '/watch?url=' + encodeURIComponent(data);
+                                });
+                            })
+                    }
+                    return;
+                }
+                navigator.clipboard.readText()
+                    .then(clipboardText => {
+                        url = clipboardText.trim();
+                        window.location.href = '/watch?url=' + encodeURIComponent(url);
+                    })
+            }
+            function copyExtensionScript(event)
+            {
+                fetch('/extension.js')
+                    .then(response => {
+                        if (!response.ok) return;
+                        response.text().then(data => {
+                            if (!data) return;
+                            navigator.clipboard.writeText(data).then(() => {
+                                var b = document.getElementById('script-copy');
+                                b.innerHTML = '<i class="fa-solid fa-file-code"></i> Script Copied!';
+                                setTimeout(() => { b.innerHTML = '<i class="fa-solid fa-file-code"></i> Copy extension js'; }, 2000);
+                            });
+                        });
+                    })
+            }
+            if (typeof navigator.serviceWorker !== 'undefined')
+                navigator.serviceWorker.register("/sw.js", { scope: '/' })
+        </script>
+    </body>
+</html>

@@ -1,0 +1,1428 @@
+import copy
+import http.cookies
+import json
+import math
+import os
+import re
+import time
+import traceback
+import io
+import ipaddress
+import psutil
+import requests
+import shutil
+import socket
+import struct
+from PIL import Image
+from datetime import datetime
+from hashlib import sha1
+from multiprocessing import Process, Queue
+from urllib.parse import parse_qs, quote_plus, unquote, urlencode, urljoin, urlparse, urlunparse
+from flask import Response, jsonify, request, send_file
+from external import External
+from ffmpeg import FFMPEG
+from main import *
+from sb import SponsorBlock
+
+
+
+class FileCachingLock:
+    def __init__(self, url, media_type):
+        self.url = url
+        self.media_type = media_type
+        self.data_dir = get_data_dir(url)
+
+    def __enter__(self):
+        for _ in range(600):
+            if not os.path.exists(os.path.join(self.data_dir, f'{self.media_type}.temp')):
+                break
+            time.sleep(1)
+            print(f'Waiting for download of {self.media_type} for {self.data_dir.split("/")[-1]}')
+        
+        if cached_media := check_media(url=self.url, media_type=self.media_type):
+            print(f'Cache hit for {self.media_type}!')
+            self.url = None
+            return cached_media
+        
+        os.makedirs(self.data_dir, exist_ok=True)
+        keepalive(self.data_dir)
+        with open(os.path.join(self.data_dir, f'{self.media_type}.temp'), 'w') as f:
+            f.write(datetime.now().isoformat())
+        
+        return None
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        if self.url:
+            try: os.remove(os.path.join(self.data_dir, f'{self.media_type}.temp'))
+            except: print(f'FATAL ERROR trying to unlock {self.media_type} of {self.data_dir}. Media type cannot be downloaded')
+
+
+
+class Processes:
+    @staticmethod
+    def get():
+        proc = {}
+        try:
+            for i in os.listdir(data_path):
+                if not os.path.isdir(os.path.join(data_path, i)):
+                    with open(os.path.join(data_path, i), 'r') as f:
+                        proc[str(i)] = json.load(f)
+        except: pass
+        return proc
+
+    @staticmethod
+    def getitem(item):
+        with open(os.path.join(data_path, str(item)), 'r') as f:
+            return json.load(f)
+
+    @staticmethod
+    def setitem(item, val):
+        print(f'Assigning pid {item} to {val}')
+        proc = Processes.get()
+        if len(proc.keys()) > max_processes:
+            oldest = min(proc, key=lambda k: proc[k][2])
+            print('Too many processes! Killing the oldest one')
+            Processes.rm(oldest, True)
+        with open(os.path.join(data_path, str(item)), 'w') as f:
+            json.dump(val, f)
+
+    @staticmethod
+    def rm(item, kill = False):
+        print(f'Removing pid {item}{"(killing)" if kill else ""}')
+        if kill:
+            try:
+                os.kill(int(item), 9)
+                time.sleep(.2)
+            except ProcessLookupError:
+                print('Skipping killing - process already exited')
+            except Exception as e:
+                pprint_exc(e)
+        if os.path.exists(os.path.join(data_path, str(item))):
+            os.remove(os.path.join(data_path, str(item)))
+
+    @staticmethod
+    def rm_all(url = None):
+        "Removes all processes for a given url (if provided) or the whole app"
+        print(f'Killing all processes{" for " + url if url else ""}')
+        cancelled_count = 0
+        for _ in range(10):
+            p = Processes.get()
+            for proc in p.keys():
+                try:
+                    if url == p[proc][0] or url is None:
+                        Processes.rm(proc, kill=True)
+                        cancelled_count += 1
+                except Exception as e:
+                    pprint_exc(e)
+            time.sleep(0.2)
+        if url is None:
+            try:
+                children = psutil.Process().children(recursive=True)
+            except Exception as e:
+                pprint_exc(e)
+                return 0
+            for child in children:
+                cancelled_count += 1
+                try: child.kill()
+                except psutil.NoSuchProcess: pass
+                except Exception as e: pprint_exc(e)
+            psutil.wait_procs(children, timeout=2)
+        return cancelled_count
+
+
+class YTDLP:
+
+    class Logger:
+        def __init__(self, url, opts, method, yt_id = None):
+            self.yt_id = yt_id or sha1(f'{time.time()}'.encode()).hexdigest()[:6]
+            if not yt_id: self.start(url, opts, method)
+
+        def start(self, url, opts, method):
+            print(f'[YT-DLP {self.yt_id}] Running YT-DLP {method} with opts: {opts} for url: {url}')
+
+        def debug(self, msg):
+            print(f'[YT-DLP {self.yt_id}] {msg}')
+
+        def info(self, msg):
+            print(f'[YT-DLP {self.yt_id}] {msg}')
+
+        def warning(self, msg):
+            print(f'[YT-DLP {self.yt_id}] WARNING {msg}')
+
+        def error(self, msg):
+            print(f'[YT-DLP {self.yt_id}] ERROR {msg}')
+        
+        def finish(self):
+            print(f'[YT-DLP {self.yt_id}] Finished')
+
+
+    @staticmethod
+    def ydl(opts: dict):
+        yt_dlp = External.yt_dlp()
+        if imp_str := opts.get('impersonate'):
+            try:
+                target = yt_dlp.networking.impersonate.ImpersonateTarget.from_str(imp_str)
+                return yt_dlp.YoutubeDL(opts | {'impersonate': target})
+            except Exception as e:
+                pprint_exc(e)
+                print('Impersonation raised an error, removing "impersonate" argument from yt-dlp')
+                opts.pop('impersonate', None)
+        return yt_dlp.YoutubeDL(opts)
+
+
+    @staticmethod
+    def _ydl_runner(url, opts, with_info, arg, queue, yt_id = None):
+        logger = YTDLP.Logger(url, opts, 'download', yt_id)
+        try:
+            add_to_path(ffmpeg)
+            add_to_path(js_runtime)
+            with YTDLP.ydl(copy.deepcopy(opts) | {'logger': logger}) as ydl:
+                if with_info:
+                    ydl.download_with_info_file(arg)
+                else:
+                    ydl.download(arg)
+        except Exception as e:
+            queue.put(f'{e}')
+        logger.finish()
+
+
+    @staticmethod
+    def download(url, opts, expected_media: str|None = None):
+        if (proxy := get_proxy(url)): opts["proxy"] = proxy
+        logger = YTDLP.Logger(url, opts, 'download')
+        def ydl_download(url, opts, with_info = False):
+            q = Queue()
+            arg = check_media(url, 'meta') if with_info else unquote(url)
+            p = Process(target=YTDLP._ydl_runner, args=(url, opts, with_info, arg, q, logger.yt_id))
+            p.start()
+            Processes.setitem(p.pid, [url, f'YT-DLP {logger.yt_id}', time.time()])
+            p.join()
+            Processes.rm(p.pid)
+            while not q.empty():
+                logger.error(q.get())
+            logger.info(f'Exited with code {p.exitcode}')
+            if p.exitcode != 0: raise RuntimeError(f'YT-DLP exited unexpectedly with return code {p.exitcode}')
+            if expected_media and not check_media(url, expected_media): raise RuntimeError(f'YT-DLP did not download {expected_media}')
+
+        try:
+            try:
+                ydl_download(url, opts, True)
+            except Exception as e:
+                pprint_exc(e)
+                logger.error('An error occured when downloading with meta. Downloading without meta...')
+                ydl_download(url, opts, False)
+        except Exception as e:
+            if (cookies := get_global_cookies_file(True)):
+                pprint_exc(e)
+                logger.error('An error occured when downloading. Downloading with cookies...')
+                opts["cookiefile"] = cookies
+                opts["mark_watched"] = False
+                ydl_download(url, opts)
+            else:
+                logger.error('An error occured when downloading. Providing cookies may help with this issue.')
+                raise e
+        finally:
+            logger.finish()
+
+
+    @staticmethod
+    def get_info(url, opts):
+        if (proxy := get_proxy(url)): opts["proxy"] = proxy
+        logger = YTDLP.Logger(url, opts, 'extract_info')
+        add_to_path(js_runtime)
+        try:
+            with YTDLP.ydl(copy.deepcopy(opts) | {'logger': logger}) as ydl:
+                return ydl.sanitize_info(ydl.extract_info(url, download=False))
+        except Exception as e:
+            if (cookies := get_global_cookies_file(True)):
+                pprint_exc(e)
+                logger.error('An error occured when downloading. Downloading with cookies...')
+                opts["cookiefile"] = cookies
+                opts["mark_watched"] = False
+                logger.start(url, opts, 'extract_info')
+                try:
+                    with YTDLP.ydl(copy.deepcopy(opts) | {'logger': logger}) as ydl:
+                        return ydl.sanitize_info(ydl.extract_info(url, download=False))
+                except Exception as e:
+                    advance_proxy(url)
+                    raise e
+            else:
+                logger.error('An error occured when downloading. Providing cookies may help with this issue.')
+                advance_proxy(url)
+                raise e
+        finally:
+            logger.finish()
+
+
+
+class MediaDownloader:
+    def __init__(self, url: str, media_type: str):
+        self.url = re.sub(r'(https?):/{1,}', r'\1://', url)
+        self.data_dir = get_data_dir(self.url)
+        self.media_type = media_type
+        os.makedirs(self.data_dir, exist_ok=True)
+
+
+    def run(self):
+        with FileCachingLock(self.url, self.media_type) as cache:
+            if cache: return cache
+            self._load_variables()
+            if   self.media_type.startswith('thumb'): self.thumb()
+            elif self.media_type.startswith('playlist'): self.playlist()
+            elif self.media_type.startswith('audio'): self.audio()
+            elif self.media_type.startswith('video'): self.video()
+            elif self.media_type.startswith('hls'): self.hls()
+            elif self.media_type.startswith('low'): self.low()
+            elif self.media_type.startswith('sub'): self.sub()
+            elif self.media_type.startswith('sprite'): self.sprite()
+            elif self.media_type.startswith('picture'): self.picture()
+        return check_media(url=self.url, media_type=self.media_type)
+
+
+    def _load_variables(self):
+        self.output_path = os.path.join(self.data_dir, f'{self.media_type}.%(ext)s')
+        print(f'Downloading {self.media_type} for {self.url}')
+        self.ydl_opts = {"outtmpl": self.output_path}
+        self.ydl_opts.update(ydl_global_opts)
+        if cookies := check_media(self.url, 'cookies') or get_global_cookies_file(): self.ydl_opts["cookiefile"] = cookies
+        self.meta = get_meta(self.url)
+        if not self.meta: raise RuntimeError("Video metadata cannot be gathered!")
+        if int(self.meta.get('duration') or 0) > max_video_duration: raise ValueError("Video too long for this app to handle")
+        self.timestamps = re.search(r'_(\d+\.?\d*)-(\d+\.?\d*)', self.media_type)
+        self.start_time = None
+        self.end_time = None
+        selected_res = re.search(r'(\d+)', self.media_type) and re.search(r'(\d+)', self.media_type).group(1)
+        self.res = int(selected_res or get_good_quality(get_all_video_sources(meta=self.meta)))
+
+        if self.timestamps:
+            try:
+                self.start_time = float(self.timestamps.group(1))
+                self.end_time = float(self.timestamps.group(2))
+                self.ydl_opts.update({'download_ranges': External.yt_dlp().utils.download_range_func(None, [(self.start_time, self.end_time)]), 'force_keyframes_at_cuts': True})
+                print(f"Downloading section {self.start_time}-{self.end_time}")
+            except ValueError:
+                print("Error parsing start/end times from media_type")
+
+
+    def thumb(self):
+        thumb_url = self.meta.get('thumbnail')
+        video_width = self.meta.get('width')
+        video_height = self.meta.get('height')
+        if thumb_url:
+            try:
+                download_media_file(thumb_url, os.path.join(self.data_dir, 'thumb-orig'))
+            except Exception as e:
+                pprint_exc(e)
+
+        thumb_file = check_media(url=self.url, media_type='thumb-orig')
+        if not thumb_file:
+            print('Direct thumbnail download did not succeed. Downloading using yt-dlp.')
+            self.ydl_opts.update({'writethumbnail': True, 'skip_download': True})
+            YTDLP.download(self.url, self.ydl_opts)
+            thumb_file = check_media(url=self.url, media_type='thumb-orig')
+
+            if not thumb_file and (video_height or video_width):
+                print('Thumbnail download did not succeed. Generating from video.')
+                try:
+                    src = check_media(self.url, 'video')
+                    if not src:
+                        srcs = choose_sources_for_res(get_all_video_sources(self.url, self.meta))
+                    duration = int(self.meta.get('duration') or 10)
+                    ffmpeg_command = [
+                        '-ss', f'{int(duration/10)}',
+                        '-i', ensure_path_accessible(srcs[1][0][0]),
+                        '-frames:v', '1',
+                        os.path.join(self.data_dir, 'thumb-orig.jpg')
+                    ]
+                    FFMPEG(self.url, ffmpeg_command)
+                except Exception as e:
+                    pprint_exc(e)
+                thumb_file = check_media(url=self.url, media_type='thumb-orig')
+
+        if thumb_file:
+
+            try:
+                if video_width and video_height:
+
+                    with Image.open(thumb_file) as im:
+                        im = im.convert("RGB")
+
+                        in_w, in_h = im.size
+                        target_ar = video_width / video_height
+                        if in_w / in_h > target_ar:
+                            new_w = int(in_h * target_ar)
+                            new_h = in_h
+                        else:
+                            new_h = int(in_w / target_ar)
+                            new_w = in_w
+
+                        left = (in_w - new_w) // 2
+                        top = (in_h - new_h) // 2
+                        right = left + new_w
+                        bottom = top + new_h
+
+                        im = im.crop((left, top, right, bottom))
+                        im.save(os.path.join(self.data_dir, 'thumb.jpg'), quality=95)
+
+                    print(f"Thumbnail cropped")
+                    os.remove(thumb_file)
+                else:
+                    print("Video dimensions not found in meta, skipping thumbnail cropping.")
+            except Exception as e:
+                print(f"Error cropping thumbnail")
+                pprint_exc(e)
+        else:
+            print("No thumbnail could be generated or found")
+            Image.new('RGB', (10, 10), color = 'black').save(os.path.join(self.data_dir, 'thumb-missing.png'), format='PNG')
+        compress_image(self.url, 'thumb')
+
+
+    def playlist(self):
+        query = parse_qs(urlparse(self.url).query).get('q')
+        entries = []
+        if query:
+            input_entries = search(query[0], 'ytsearch10')
+        else:
+            self.ydl_opts.update({"playlistend": 10, 'quiet': True, 'skip_download': True})
+            del self.ydl_opts['noplaylist']
+            print(f'Running YT-DLP with opts: {self.ydl_opts}')
+            input_entries = YTDLP.get_info(self.url, self.ydl_opts).get('entries') or {}
+
+        for entry in input_entries:
+            entry['original_url'] = normalize_url(entry['original_url'])
+            entries.append(get_video_info(entry))
+        for entry in input_entries:
+            preload(meta=entry, playlist=entries)
+
+        with open(os.path.join(get_data_dir(self.url), 'playlist.json'), 'w') as f:
+            json.dump(entries, f)
+
+
+    def audio(self):
+        if self.meta.get('is_live'): raise NotImplementedError('Livestream transcoding is not supported')
+        self.ydl_opts.update({"format": "bestaudio/best", "extract_audio": True, "outtmpl": os.path.join(self.data_dir, f'{self.media_type}.mp3')})
+        YTDLP.download(self.url, self.ydl_opts)
+
+
+    def video(self):
+        if self.meta.get('is_live'): raise NotImplementedError('Livestream transcoding is not supported')
+        mark_watched(self.url)
+
+        height_param = "" if self.media_type.startswith('video-best') else f'[height<={self.res}]'
+        if self.timestamps:
+            if vid := check_res_at_least(self.url, self.res):
+                FFMPEG(self.url, ["-ss", f'{self.start_time}', "-to", f'{self.end_time}', '-i', vid, '-vf', f'scale=-2:{self.res}', os.path.join(get_data_dir(self.url), self.media_type + '.mp4')])
+            else:
+                self.ydl_opts.update({"format": f"bestvideo{height_param}+bestaudio/best", "outtmpl": os.path.join(self.data_dir, f'{self.media_type}.%(ext)s')})
+                YTDLP.download(self.url, self.ydl_opts)
+        else:
+            if vid := check_res_at_least(self.url, self.res):
+                FFMPEG(self.url, ['-i', vid, '-vf', f'scale=-2:{self.res}', os.path.join(get_data_dir(self.url), self.media_type + '.mp4')])
+            else:
+                success = False
+                temp_video = None
+                try:
+                    self.ydl_opts.update({"format": f"bestvideo{height_param}/best", "outtmpl": os.path.join(self.data_dir, f'temp-{self.media_type}.%(ext)s')})
+                    YTDLP.download(self.url, self.ydl_opts)
+                    audio_file = check_media(self.url, 'audio') or MediaDownloader(self.url, 'audio').run()
+                    temp_video = check_media(self.url, f'temp-{self.media_type}')
+                    success = FFMPEG(self.url, ['-i', audio_file, '-i', temp_video, "-c:a", "copy", "-c:v", "copy", temp_video.replace('temp-', '')]).success
+                except Exception as e:
+                    pprint_exc(e)
+                finally:
+                    if temp_video: os.remove(temp_video)
+                if not success:
+                    print(f'Falling back to standard video download due to FFMPEG error')
+                    self.ydl_opts.update({"format": f"bestvideo{height_param}+bestaudio/best", "outtmpl": os.path.join(self.data_dir, f'{self.media_type}.%(ext)s')})
+                    YTDLP.download(self.url, self.ydl_opts)
+
+
+    def hls(self):
+        if self.meta.get('is_live'): raise NotImplementedError('Livestream transcoding is not supported')
+        mark_watched(self.url)
+
+        res_str = 'audio' if 'audio' in self.media_type else str(self.res)
+        hls_url_dir = os.path.join(gen_pathname(self.url), f"hls_segment-{res_str}")
+        hls_output_dir = os.path.join(data_path, hls_url_dir)
+        hls_segment_duration = hls_audio_duration if res_str == 'audio' else hls_duration
+        os.makedirs(hls_output_dir, exist_ok=True)
+
+        temp_m3u8_path = os.path.join(self.data_dir, f'{self.media_type}.m3u8.temp')
+        m3u8_path = os.path.join(self.data_dir, f'{self.media_type}.m3u8')
+
+        sources = get_all_video_sources(self.url, self.meta)
+        video_source = None
+        audio_source = None
+        video_file_path = check_media(self.url, 'audio') if res_str == 'audio' else check_res_at_least(self.url, self.res)
+
+        if not video_file_path:
+            audio_media = check_media(self.url, 'audio')
+            audio_source = [audio_media] if audio_media else sources.get('audio')
+            if res_str in sources.keys() and res_str != 'audio':
+                video_source = sources.get(res_str)
+
+            if not video_source and not audio_source:
+                print('Could not find any suitable streamable video source: Downloading the whole video')
+                video_file_path = MediaDownloader(self.url, 'audio' if 'audio' in self.media_type else f'video-{self.res}').run()
+
+        ffmpeg_command = [
+            '-c:v', 'libx264',
+            '-crf', '22',
+            '-r', f'{self.meta.get("fps") or "30"}',
+            '-c:a', 'aac',
+            '-ar', '44100',
+            '-f', 'hls',
+            '-vf', f'scale=-2:{self.res}',
+            '-force_key_frames', f'expr:gte(t,n_forced*{hls_segment_duration})',
+            '-hls_time', f'{hls_segment_duration}',
+            '-hls_playlist_type', 'vod',
+            '-hls_segment_filename', os.path.join(hls_output_dir, 'segment%04d.ts'),
+            temp_m3u8_path
+        ]
+
+        if video_source:
+            ffmpeg_command = ['-i', ensure_path_accessible(video_source[0][0])] + ffmpeg_command
+        if audio_source:
+            ffmpeg_command = ['-i', ensure_path_accessible(audio_source[0][0])] + ffmpeg_command
+        if video_file_path:
+            ffmpeg_command = ['-i', video_file_path] + ffmpeg_command
+
+        seg_time = 0
+        seg_num = 0
+        duration = get_media_duration(self.url, self.meta, ffmpeg_command[1])
+        hls_url_dir = os.path.join(gen_pathname(self.url), f"hls_segment-{res_str}")
+        seg_path = f"/hls_segment?url={quote_plus(self.url)}&quality={res_str}&seg="
+
+        with open(m3u8_path, "w") as f:
+            f.write(f"#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:{hls_segment_duration}\n#EXT-X-MEDIA-SEQUENCE:0\n#EXT-X-PLAYLIST-TYPE:VOD\n")
+            while seg_time < duration:
+                time_to_add = min(hls_segment_duration, duration - seg_time)
+                f.write(f"#EXTINF:{time_to_add:.6f},\n{seg_path}{seg_num}\n")
+                seg_time += time_to_add
+                seg_num += 1
+            f.write("#EXT-X-ENDLIST\n")
+
+        def download_hls_files():
+            nonlocal video_file_path
+            try:
+                if not video_file_path:
+                    ff = FFMPEG(self.url)
+                    ff.affected_files = [m3u8_path, temp_m3u8_path]
+                    Thread(target=ff.run, args=[ffmpeg_command]).start()
+                    time.sleep(2)
+                    video_file_path = MediaDownloader(self.url, 'audio' if 'audio' in self.media_type else f'video-{self.res}').run()
+                    if not video_file_path: raise RuntimeError('Could not download video')
+                    print(f'Killing FFMPEG {ff.ff_id} due to local media availability')
+                    ff.kill()
+                    if os.path.exists(m3u8_path): os.rename(m3u8_path, temp_m3u8_path)
+                    MediaDownloader(self.url, self.media_type).run()
+                else:
+                    ff = FFMPEG(self.url)
+                    ff.affected_files = [m3u8_path, temp_m3u8_path]
+                    ff.run(ffmpeg_command)
+                    if ff.success:
+                        print(f"FFMPEG Finished HLS Conversion!")
+                        if os.path.exists(temp_m3u8_path): os.remove(temp_m3u8_path)
+                    else:
+                        print(f"An FFMPEG error occurred during HLS conversion")
+            except Exception as e:
+                print(f"An unexpected error occurred during HLS conversion")
+                pprint_exc(e)
+
+        Thread(target=download_hls_files, daemon=True).start()
+
+
+    def low(self):
+        if self.meta.get('is_live'): raise NotImplementedError('Livestream transcoding is not supported')
+        ffmpeg_command = [
+            '-i', MediaDownloader(self.url, 'video').run(),
+            '-c:v', 'libx265',
+            '-crf', '34',
+            '-c:a', 'aac',
+            '-r', '30',
+            '-vf', 'scale=-2:240',
+            '-preset', 'veryfast',
+            os.path.join(self.data_dir, 'low.mp4')
+        ]
+        FFMPEG(self.url, ffmpeg_command)
+
+
+    def sub(self):
+        lang = self.media_type.split('-')[1]
+        print(f'downloading sub for {lang=}')
+
+        try:
+            sub = {**(self.meta.get('subtitles') or {}), **(self.meta.get('automatic_captions') or {})}.get(lang) or []
+            selected = next((i for ext in ('srt', 'vtt') for i in sub if i.get('ext') == ext and i.get('url')), None)
+            if not selected:
+                raise FileNotFoundError('Selected subtitles not found')
+            download_media_file(selected['url'], os.path.join(self.data_dir, self.media_type), selected['ext'])
+
+            file = check_media(url=self.url, media_type=self.media_type)
+            if not file:
+                raise FileNotFoundError('Selected subtitles not found')
+            with open(file, 'r') as f:
+                if '-->' not in f.read():
+                    raise TypeError('Downloaded subtitles are not valid')
+
+        except Exception as e:
+            print(f'Direct subtitle download did not succeed: {e}. Downloading using yt-dlp.')
+            if f := check_media(url=self.url, media_type=self.media_type):
+                os.remove(f)
+            self.ydl_opts.update({'writesubtitles': True, 'skip_download': True, 'subtitleslangs': [lang]})
+            try:
+                YTDLP.download(self.url, self.ydl_opts, self.media_type)
+            except Exception as e:
+                pprint_exc(e)
+
+        file = check_media(url=self.url, media_type=self.media_type)
+        if file and file.endswith('srt'):
+            with open(file, 'r') as f:
+                data = f.read()
+            data = re.sub(r'(\d{2}:\d{2}:\d{2}),(\d{3})', r'\1.\2', data)
+            with open(file, 'w') as f:
+                f.write('WEBVTT\n' + data)
+
+
+    def sprite(self):
+        err = None
+        if self.meta.get('is_live'): err = 'Sprite not available for livestreams'
+        if not self.meta.get('height') and not self.meta.get('width'): err = 'Sprite not available for non-video media'
+        if err:
+            print(err)
+            return
+        if get_sprite(self.url, self.meta): return
+        if self.meta["duration"] > generate_sprite_below: err = f"Video too long to generate sprite ({self.meta['duration']}s)"
+        video_path = check_media(url=self.url, media_type='video')
+        sprite_dir = os.path.join(self.data_dir, 'temp_sprite')
+        os.makedirs(sprite_dir, exist_ok=True)
+        if not video_path:
+            MediaDownloader(self.url, 'video').run()
+            video_path = check_media(url=self.url, media_type='video')
+        if video_path:
+            frame_interval = 10 # seconds
+            frame_width = 160
+            frame_height = 90
+            frames_per_row = 10
+
+            ffmpeg_command = [
+                '-i', ensure_path_accessible(video_path),
+                '-vf', f'fps={1/frame_interval},scale={frame_width}:{frame_height}',
+                os.path.join(sprite_dir, 'frame_%04d.jpg')
+            ]
+
+            try:
+                if not FFMPEG(self.url, ffmpeg_command).success: raise RuntimeError('FFMPEG failed to extract sprite')
+                frame_files = sorted(os.listdir(sprite_dir))
+                num_frames = len(frame_files)
+                num_rows = math.ceil(num_frames / frames_per_row)
+                canvas_width = frames_per_row * frame_width
+                canvas_height = num_rows * frame_height
+                print(f'Sprite: generated {num_frames} frames. Combining into a {canvas_width}x{canvas_height} sprite.')
+
+                sprite_image = Image.new('RGB', (canvas_width, canvas_height))
+
+                for i, frame_file in enumerate(frame_files):
+                    frame_path = os.path.join(sprite_dir, frame_file)
+                    with Image.open(frame_path) as img:
+                        row = i // frames_per_row
+                        col = i % frames_per_row
+                        x = col * frame_width
+                        y = row * frame_height
+                        sprite_image.paste(img, (x, y))
+                sprite_image.save(os.path.join(self.data_dir, 'sprite.jpg'))
+                compress_image(self.url, 'sprite')
+                shutil.rmtree(sprite_dir)
+            except Exception as e:
+                print(f"Sprite error: {e}")
+
+
+    def picture(self):
+        video_src = check_res_at_least(self.url, self.res)
+        if not video_src:
+            s = choose_sources_for_res(get_all_video_sources(self.url, self.meta))[1][0]
+            print(s)
+            video_src = s[0]
+        try:
+            ffmpeg_command = [
+                '-ss', f'{self.start_time}',
+                '-i', ensure_path_accessible(video_src),
+                '-frames:v', '1',
+                os.path.join(self.data_dir, f'{self.media_type}.jpg')
+            ]
+
+            if not FFMPEG(self.url, ffmpeg_command).success: raise RuntimeError('FFMPEG failed to extract picture')
+        except Exception as e:
+            if video_src.startswith('http'):
+                ffmpeg_command = [
+                    '-ss', f'{self.start_time}',
+                    '-i', MediaDownloader(self.url, 'video').run(),
+                    '-frames:v', '1',
+                    os.path.join(self.data_dir, f'{self.media_type}.jpg')
+                ]
+                if not FFMPEG(self.url, ffmpeg_command).success: raise RuntimeError('FFMPEG failed to extract picture')
+            else:
+                raise e
+
+
+
+def add_to_path(file):
+    d = file and os.path.dirname(file)
+    if d and d not in os.environ.get('PATH', '').split(os.pathsep):
+        os.environ['PATH'] = os.pathsep.join(filter(None, [os.environ.get('PATH'), d]))
+
+
+def check_alerts():
+    alerts = []
+    if os.environ.get('SUPRESS_WARNINGS'): return alerts
+    for env_var in deprecated_env:
+        if os.environ.get(env_var) is not None:
+            alerts.append(f'You are using a deprecated environment variable "{env_var}" which no longer works.')
+    if alerts:
+        alerts.append('You can disable alerts by setting "SUPRESS_WARNINGS" environment variable to true.')
+    return alerts
+
+
+def fetch_safe(url: str, **kwargs) -> requests.Response:
+    """prevents requesting from local network"""
+    for _ in range(5):
+        hostname = urlparse(url).hostname
+        if urlparse(url).scheme not in ('http', 'https') or not hostname:
+            raise ValueError('Invalid URL')
+        for addrinfo in socket.getaddrinfo(hostname, None):
+            ip = ipaddress.ip_address(addrinfo[4][0])
+            if not (getattr(ip, 'ipv4_mapped', None) or ip).is_global:
+                raise ValueError(f'Refusing to fetch URL resolving to disallowed address: {hostname}')
+        response = requests.get(url, allow_redirects=False, **kwargs)
+        if not response.is_redirect:
+            return response
+        url = urljoin(url, response.headers['Location'])
+        response.close()
+    raise ValueError('Too many redirects')
+
+
+def ensure_path_accessible(path: str):
+    if path.startswith('/external'): path = f'http://localhost:{port}{path}'
+    return path
+
+
+def download_media_file(url: str, path_without_ext: str, ext: str|None = None):
+    """Download raw file with requests.get with selected filename"""
+    response = fetch_safe(url, stream=True, proxies=get_proxy(url, True))
+    response.raise_for_status()
+    if not ext:
+        urlpath = url
+        if '?' in url:
+            urlpath = url[:url.find('?')]
+        _, ext = os.path.splitext(urlpath)
+    with open(f'{path_without_ext}.{ext.lstrip(".")}', 'wb') as f:
+        for chunk in response.iter_content(chunk_size=8192):
+            f.write(chunk)
+
+
+def load_http_cookies(cookies_str):
+    if not cookies_str: return None
+    c = http.cookies.SimpleCookie()
+    c.load(cookies_str)
+    return requests.utils.cookiejar_from_dict({k: v.value for k, v in c.items()})
+
+
+def stream_media_file(url: str, src: str, fmt_id: str|None = None, headers_range = None, meta: dict|None = None):
+    """Stream raw file with requests.get"""
+    if url: mark_watched(url)
+    headers = None
+    cookies = None
+    if url and fmt_id:
+        fmt = next(f for f in ((meta or get_meta(url, force=True)).get('formats') or []) if (f.get('format_id') == fmt_id or f.get('url') == url))
+        headers = fmt.get('http_headers')
+        cookies = fmt.get('cookies')
+    try:
+        headers_dict = dict(headers) if headers else {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        }
+        if headers_range: headers_dict['Range'] = headers_range
+        url = url or ""
+        response = fetch_safe(src, stream=True, headers=headers_dict, cookies=load_http_cookies(cookies), proxies=get_proxy(url, True))
+        response.raise_for_status()
+        mime_type = response.headers.get('Content-Type', 'application/octet-stream')
+
+        chunks = response.iter_content(chunk_size=8192)
+        content = next(chunks, b'')
+        if 'mpegurl' in mime_type.lower() or content.startswith(b'#EXTM3U'):
+            lines = []
+            src_regex = re.compile(r'(URI=["\'])([^"\']*)(["\'])')
+
+            def replace_src(match):
+                prefix, orig_src, suffix = match.groups()
+                new_src = f'/external?src={quote_plus(urljoin(src, orig_src))}&url={quote_plus(url)}&fmt_id={fmt_id}'
+                return f'{prefix}{new_src}{suffix}'
+            raw_lines = (content + b''.join(chunks)).decode('utf-8', errors='ignore').splitlines()
+            skipline = False
+            for idx, line in enumerate(raw_lines):
+                line_str = line.strip()
+                if not line_str:
+                    lines.append(line)
+                    continue
+                if skipline:
+                    skipline = False
+                    continue
+                if line_str.startswith('#EXTINF:0.0') and idx > (len(raw_lines) - 6):
+                    print(f'Removing last short segment: {line_str}')
+                    skipline = True
+                    continue
+
+                if line_str.startswith('#'):
+                    lines.append(src_regex.sub(replace_src, line))
+                else:
+                    urlbase = src if '://' in src else url
+                    line = f'/external?src={quote_plus(urljoin(urlbase, line_str))}&url={quote_plus(url)}&fmt_id={fmt_id}'
+                    lines.append(line)
+
+            resp = Response('\n'.join(lines), status=200, mimetype='application/vnd.apple.mpegurl')
+            resp.headers['Content-Security-Policy'] = 'sandbox'
+            return resp
+
+        def generate():
+            if content: yield content
+            yield from chunks
+
+        resp = Response(generate(), status=response.status_code, mimetype=mime_type)
+        resp.headers['Content-Security-Policy'] = 'sandbox'
+
+        if 'Content-Length' in response.headers:
+            resp.headers['Content-Length'] = response.headers['Content-Length']
+        if 'Content-Range' in response.headers:
+            resp.headers['Content-Range'] = response.headers['Content-Range']
+        resp.headers['Accept-Ranges'] = 'bytes'
+        return resp
+    except Exception as e:
+        print(f"Error streaming media file: {e}")
+        if url and os.path.exists(os.path.join(get_data_dir(url), 'meta')): get_meta(url, 10)
+        return jsonify({"error": f"Failed to stream media: {e}"}), 500
+
+
+
+def host_file(url: str, media_type='video', download_name: str | None = None):
+    if not url: return jsonify({"error": "URL parameter is required"}), 400
+    if '/' in media_type or '\\' in media_type: return jsonify({"error": "Invalid media type"}), 400
+    file = MediaDownloader(url, media_type).run()
+    if file:
+        if download_name:
+            if '-' in media_type or '_' in media_type: download_name += '-' + media_type.replace('_', '-').split('-', 1)[-1]
+            download_name += os.path.splitext(file)[1]
+            download_name = download_name.replace('-0.0.', '-.').replace('_0.0-', '_-')
+        return send_file(file, download_name=download_name)
+    return jsonify({"error": f"Cannot gather {media_type}"}), 404
+
+
+
+def preload(url = None, meta = None, playlist = None):
+    url = url or (meta.get('original_url') or '')
+    print('Running preload')
+
+    if meta:
+        if meta.get('entries'): meta = meta['entries'][0]
+        meta.setdefault('timestamp', int(time.time()))
+        try:
+            os.makedirs(get_data_dir(url), exist_ok=True)
+            with open(os.path.join(get_data_dir(url), 'meta.json'), 'w') as f:
+                json.dump(meta, f)
+        except:
+            pass
+
+    avail_procs = max_processes - len(Processes.get().keys())
+    if not check_media(url, 'meta'):
+        Thread(target=get_meta, args=[url]).start()
+        avail_procs -= 1
+    if not check_media(url, 'thumb'):
+        Thread(target=MediaDownloader(url, 'thumb').run).start()
+    if not disable_transcoding and not check_media(url, 'hls-audio') and avail_procs > 1:
+        Thread(target=lambda: (MediaDownloader(url, 'hls-audio').run() if 'audio' not in get_all_video_sources(url, meta).keys() else None)).start()
+        avail_procs -= 1
+    if playlist and not check_media(url, 'playlist'):
+        with open(os.path.join(get_data_dir(url), 'playlist.json'), 'w') as f:
+            json.dump(playlist, f)
+    if avail_procs <= 1: print('Warning: video may be loading slower than usual - consider increasing MAX_PROCESSES if that\'s an issue')
+
+
+def mark_watched(url):
+    if check_media(url, 'watched'): return
+    if cookies := check_media(url, 'cookies') or get_global_cookies_file():
+        mark_watched = lambda: YTDLP.get_info(url, ydl_global_opts | {'mark_watched': True, 'cookiefile': cookies})
+        Thread(target=mark_watched).start()
+        open(os.path.join(get_data_dir(url), 'watched'), 'w').close()
+
+
+def get_media_duration(url, meta, media):
+    if meta.get('is_live') or meta.get('live_status') == 'is_live': return 0
+    try:
+        if d := meta.get("duration"): return d
+    except:
+        pass
+    ffmpeg_command = ['-i', ensure_path_accessible(media), '-hide_banner', '-f', 'null', '-stats']
+    ff = FFMPEG(url)
+    try: ff.run(ffmpeg_command)
+    except Exception: pass
+    info = ff.stdout
+    for line in info.splitlines():
+        if line.strip().startswith('Duration:'):
+            duration = line.split('Duration:')[-1].split(', start:')[0].strip()
+            h, m, s = duration.split(":")
+            return int(h)*3600 + int(m)*60 + float(s)
+    return 0
+
+
+def get_media_res(url, meta, media):
+    try:
+        if meta.get("width") and meta.get("height"): return int(meta.get("width")), int(meta.get("height"))
+    except: pass
+    ffmpeg_command = ['-i', ensure_path_accessible(media), '-hide_banner', '-f', 'null', '-stats']
+    ff = FFMPEG(url)
+    try: ff.run(ffmpeg_command)
+    except Exception: pass
+    info = ff.stdout
+    for line in info.splitlines():
+        if line.strip().startswith('Stream'):
+            for r in line.strip().split(' '):
+                try:
+                    w, h = r.split('x')
+                    w = int(w.strip(','))
+                    h = int(h.strip(','))
+                    if w > 0 and h > 0: return w, h
+                except:
+                    pass
+    raise RuntimeError('Media resolution impossible to gather - report this bug')
+
+
+def pprint_exc(e, code = 500):
+    error = (re.sub(r'[^\x20-\x7e]',r'', re.sub(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])", "", str(e))))
+    traceback.print_exception(e)
+    return Response(error, status=code, mimetype='text/plain')
+
+
+def gen_pathname(url: str):
+    return sha1(url.encode(), usedforsecurity=False).hexdigest()
+
+
+def get_data_dir(url):
+    data_dir = os.path.join(data_path, gen_pathname(url))
+    return data_dir
+
+
+def get_global_cookies_file(force = False):
+    if cookies_only_on_failure and not force: return None
+    if os.path.exists('cookies.txt'): return 'cookies.txt'
+    return None
+
+
+def get_proxy(url, as_requests_dict = False, as_ffmpeg_dict = False):
+    if not proxies: return None
+    proxy = proxies[0]
+    if url:
+        proxy_path = os.path.join(get_data_dir(url), 'proxy')
+        if not os.path.exists(proxy_path):
+            proxy = proxies[0]
+        else:
+            with open(proxy_path, 'r') as f:
+                _, proxy = f.read().split('\n')
+    if proxy == 'local': proxy = None
+    if as_ffmpeg_dict: return {'http_proxy': proxy} if proxy else None
+    if as_requests_dict: return {'http': proxy, 'https': proxy} if proxy else None
+    return proxy
+
+
+def advance_proxy(url, force = False):
+    if not url or len(proxies) < 2: return
+    proxy_path = os.path.join(get_data_dir(url), 'proxy')
+    proxy = None
+    if os.path.exists(proxy_path):
+        with open(proxy_path, 'r') as f:
+            proxy_time, proxy = f.read().split('\n')
+        if not force and time.time() - float(proxy_time) < 20:
+            print('Skipping advancing proxy before 20s has passed')
+            return
+
+    if proxy and proxy in proxies:
+        proxy_idx = proxies.index(proxy)
+    else:
+        proxy_idx = 0
+    proxy_idx += 1
+    if proxy_idx >= len(proxies): proxy_idx = 0
+    print(f'Proxy {proxy} failed. Advancing to the next possible proxy: {proxies[proxy_idx]}')
+    with open(proxy_path, 'w') as f:
+        f.write(f'{time.time()}\n{proxies[proxy_idx]}')
+    print('Proxy advanced. Recreating meta...')
+    try: os.remove(os.path.join(get_data_dir(url), 'meta.json'))
+    except: pass
+
+
+def keepalive(data_dir):
+    with open(os.path.join(data_dir, 'keepalive'), 'w') as f:
+        f.write(str(int(time.time())))
+
+
+def check_media(url: str, media_type: str):
+    print(f'Checking media for {url=} and {media_type=}')
+    data_dir = get_data_dir(url)
+    try:
+        for i in os.listdir(data_dir):
+            if i.endswith('.part'): continue
+            if i.endswith('.ytdl'): continue
+            if i.endswith('.temp'): continue
+            if i.endswith('.pending'): continue
+            if i.count('_') != media_type.count('_'): continue
+            if i.startswith(media_type):
+                path = os.path.join(data_dir, i)
+                print(f'Serving {path}')
+                keepalive(data_dir)
+                print(f'Media for {url=} and {media_type=} found')
+                return path
+    except:
+        return None
+    return None
+
+
+def check_meta_validity(url: str, meta: dict):
+    try:
+        print(f'## Checking meta validity for {url}')
+        srcs = choose_sources_for_res(get_all_video_sources(url, meta))
+        src = (srcs[0] or srcs[1])[0]
+        query = parse_qs(urlparse(src[0]).query)
+        source = (query.get('src') or [None])[0]
+        fmt_id = (query.get('fmt_id') or [None])[0]
+        resp = stream_media_file(url, source, fmt_id, meta=meta)
+        if isinstance(resp, Response):
+            if resp.status_code > 399: raise ConnectionError(resp.response)
+
+            mime_type = resp.headers.get('Content-Type') or ''
+            if 'mpegurl' in mime_type.lower():
+
+                raw_lines = resp.data.decode('utf-8', errors='ignore').splitlines()
+                for line in raw_lines:
+                    line_str = line.strip()
+                    if not line_str or line_str.startswith('#'): continue
+                    resp = stream_media_file(url, (parse_qs(urlparse(line_str).query).get('src') or [None])[0], fmt_id, meta=meta)
+                    if not isinstance(resp, Response) or resp.status_code > 399: raise ConnectionError('Can not send a HLS request')
+                    break
+        else: raise ConnectionError('Can not send a request')
+        return True
+    except Exception as e:
+        pprint_exc(e)
+        return False
+
+
+def get_meta(url: str, max_meta_age = None, force = False):
+    if force:
+        if m := check_media(url, 'meta'):
+            with open(m, 'r') as f:
+                return json.load(f)
+        return None
+    with FileCachingLock(url, 'meta') as cache:
+        print(cache)
+        if cache:
+            try:
+                with open(cache, 'r') as f:
+                    meta = json.load(f)
+                max_meta_age = max(5, max_meta_age if max_meta_age is not None else (60 if meta.get('is_live') else 600))
+                if time.time() - (meta.get('timestamp') or 0) > max_meta_age:
+                    if not check_meta_validity(url, meta): raise RuntimeError('Metadata invalid')
+                    meta['timestamp'] = int(time.time())
+                    with open(cache, 'w') as f:
+                        json.dump(meta, f)
+                    print('Metadata still valid')
+                return meta
+            except Exception as e:
+                pprint_exc(e)
+                print('Meta file invalid - Regenerating...')
+                data_dir = get_data_dir(url)
+                for file in os.listdir(data_dir):
+                    if os.path.isdir(os.path.join(data_dir, file)): continue
+                    if file in ('cookies.txt', 'proxy') or file.endswith('.temp'): continue
+                    try: os.remove(os.path.join(data_dir, file))
+                    except: pass
+        print(f'downloading meta for {url}')
+        possible_meta = None
+        last_exception = None
+        for i in range(len(proxies) * 2 + 1):
+            try:
+                ydl_opts = {'skip_download': True, 'extractor_retries': 0, 'socket_timeout': 5}
+                if i < len(proxies): ydl_opts['socket_timeout'] = 2
+                ydl_opts.update(ydl_global_opts)
+                if cookies := check_media(url, 'cookies') or get_global_cookies_file(): ydl_opts["cookiefile"] = cookies
+                info = YTDLP.get_info(url, ydl_opts)
+                if info.get('entries'): info = info['entries'][0]
+
+                if not info.get('duration') or not info.get('width') or not info.get('height'):
+                    try:
+                        print('Fetching additional info for meta')
+                        with open(os.path.join(get_data_dir(url), 'meta.json'), 'w') as f:
+                            json.dump(info, f)
+                        raw_srcs = get_all_video_sources(url, info)
+                        srcs = choose_sources_for_res(raw_srcs)
+                        src = srcs[1] or srcs[0]
+                        duration = get_media_duration(url, info, src[0][0])
+                        info['duration'] = duration
+                        if any(key and key != 'audio' for key in raw_srcs.keys()):
+                            w, h = get_media_res(url, info, src[0][0])
+                            info['width'] = w
+                            info['height'] = h
+                    except Exception as e:
+                        pprint_exc(e)
+
+                info['original_url'] = url
+                info['timestamp'] = int(time.time())
+                possible_meta = info
+                check_meta_validity(url, info)
+                with open(os.path.join(get_data_dir(url), 'meta.json'), 'w') as f:
+                    json.dump(info, f)
+                    return info
+            except Exception as e:
+                pprint_exc(e)
+                advance_proxy(url, True)
+                last_exception = e
+        if last_exception and not possible_meta: raise last_exception
+        return possible_meta
+    return None
+
+
+def get_sb(url: str):
+    with FileCachingLock(url, 'sb') as cache:
+        try:
+            print(cache)
+            if cache:
+                with open(cache, 'r') as f: return json.load(f)
+            print(f'downloading sb for {url}')
+            sb_data = SponsorBlock(url).get_segments()
+            with open(os.path.join(get_data_dir(url), 'sb.json'), 'w') as f:
+                json.dump(sb_data, f)
+                return sb_data
+        except:
+            return None
+    return None
+
+
+def choose_sources_for_res(sources: dict[str, list[tuple[str, str, str, bool]]], res = None) -> tuple[list[tuple[str, str, str, bool]]]:
+    """
+    Chooses (audio_source, video_source) among sources, needed for playback with specific resolution.
+
+    res == None -> choses good res
+    """
+
+    res = str(res) if res else get_good_quality(sources)
+    video_source = None
+    audio_source = None
+    for s in sources.keys():
+        if not audio_source and 'audio' in s: audio_source = s
+        if res and not video_source and res in s:
+            video_source = s
+        if 'audio' in s and res in s:
+            audio_source = s
+            video_source = s
+            break
+    if (video_source or not res) and audio_source:
+        return sources.get(audio_source) or None, sources.get(video_source) or None
+    return [], []
+
+
+def get_video_ress(url = None, meta = None):
+    """
+    Generates a list of all resolutions for video
+    """
+    sources = get_all_video_sources(url, meta)
+    return sorted(list(set(int(i.split('a')[0]) for i in sources.keys() if i.split('a')[0])))
+
+
+def check_res_at_least(url:str, res: int):
+    for f in get_video_ress(url):
+        if type(f) == int and f >= res:
+            if file := check_media(url, f'video-{f}'):
+                return file
+
+
+def get_subtitles(meta: dict):
+    subs = {**(meta.get('subtitles') or {}), **(meta.get('automatic_captions') or {})}
+    all_subtitles = []
+    for lang, subs in subs.items():
+        if subs:
+            all_subtitles.append(lang)
+    return all_subtitles
+
+
+def get_mimetype(protocol: str = '', ext: str = '', video_name: str = ''):
+    mime_exts = {'m3u8': 'application/x-mpegURL', 'mpd': 'application/dash+xml', 'm4a': 'audio/mp4', 'mp3': 'audio/mpeg', 'webm': 'audio/webm', 'opus': 'audio/ogg', 'ogg': 'audio/ogg', 'wav': 'audio/wav', 'aac': 'audio/aac', 'mp4': 'video/mp4', 'webm': 'video/webm', 'mkv': 'video/x-matroska', 'mov': 'video/quicktime', 'flv': 'video/x-flv'}
+
+    if protocol:
+        if 'm3u8' in protocol: return 'application/x-mpegURL'
+        if 'dash' in protocol or protocol == 'mpd': return 'application/dash+xml'
+
+    if mime := mime_exts.get(ext.lower()):
+        return mime
+
+    if protocol:
+        if protocol in ['http', 'https']: return 'video/mp4' if video_name else 'audio/mpeg'
+
+
+def get_all_video_sources(url = None, meta = None):
+    """
+    {source_code: [(url, codec, mimetype, is_cached), ...], ...}
+    """
+    if not url: url = meta.get('original_url')
+    if not meta: meta = get_meta(url)
+    sources = get_external_video_sources(url, meta)
+    ress = list(set(f.strip('audio') for f in sources.keys()))
+    for res in ress:
+        if not sources.get(res): continue
+        if m := check_media(url, f'hls-{res}'):
+            cached = not os.path.exists(f'{m}.pending')
+            sources[res].append((f'/hls?url={quote_plus(url)}&quality={res}', 'h264', 'application/x-mpegURL', cached))
+        if m := check_media(url, f'video-{res}'):
+            sources[res].append((f'/download?url={quote_plus(url)}&quality={res}', None, get_mimetype(ext = m.split('.')[-1]), True))
+    if m := check_media(url, 'hls-audio'):
+        cached = not os.path.exists(f'{m}.pending')
+        if 'audio' not in sources.keys(): sources['audio'] = []
+        sources['audio'].append((f'/hls?url={quote_plus(url)}&quality=audio', 'aac', 'application/x-mpegURL', cached))
+    if m := check_media(url, 'audio'):
+        if 'audio' not in sources.keys(): sources['audio'] = []
+        sources['audio'].append((f'/download?url={quote_plus(url)}&quality=audio', None, get_mimetype(ext = m.split('.')[-1]), True))
+    return sources
+
+
+def get_external_video_sources(url = None, meta = None) -> dict[str, list[tuple[str, str, str, bool]]]:
+    """
+    {source_code: [(url, codec, mimetype, is_cached), ...], ...}
+    """
+    if not url: url = meta.get('original_url')
+    if not meta: meta = get_meta(url)
+    sources = {}
+    meta_formats = meta.get('formats') or []
+    language = meta.get('language')
+    meta_formats.sort(key=lambda f: f.get('source_preference') or 0, reverse=True)
+    codec_sort = lambda codec: next((i for i, p in enumerate(codec_preference) if codec.startswith(p)), len(codec_preference))
+
+    for src in meta_formats:
+        video_name = ''
+        audio_name = ''
+        source_preference = src.get('quality') or src.get('source_preference') or 0
+        if language and src.get('language') and (src.get('language') != language): continue
+        if int(src.get('height') or 0) > max_quality: continue
+        if (src.get('vcodec') or 'none').lower() != 'none' or ((src.get('video_ext') or 'none').lower() != 'none'):
+            video_name = f"{(src.get('height') or meta.get('height') or '1')}"
+        if src.get('acodec', '?') != 'none' or (src.get('audio_ext') or 'none').lower() != 'none':
+            audio_name = 'audio'
+            if 'audio' in (src.get('source_id') or '') or (src.get('acodec') or '?') == '?':
+                source_preference = -9
+        name = video_name + audio_name
+        if not name: continue
+
+        codec = src.get('vcodec') if name != 'audio' else src.get('acodec')
+        media_url = f'/external?src={quote_plus(src["url"])}&url={quote_plus(url)}&fmt_id={src.get("format_id")}'
+        if name not in sources.keys(): sources[name] = []
+        sources[name].append((source_preference, media_url, codec, get_mimetype(src.get('protocol') or '', src.get('ext') or '', video_name), False))
+    sorted_sources = {}
+    for res in sources.keys():
+        sorted_sources[res] = []
+        for src in sorted(sources[res], key=lambda x: (-x[0], codec_sort(f'{x[2]}'.lower()))):
+            sorted_sources[res].append((src[1], src[2], src[3], src[4]))
+    return sorted_sources
+
+
+def get_good_quality(sources: dict[str, list[tuple[str, str, str, bool]]]):
+    ress = list((int(src.strip('audio') or '0')) for src in sources.keys())
+    if not isinstance(ress, list) or not ress: return f'{default_quality}'
+    sorted_ress = sorted(ress)
+    for quality in sorted_ress:
+        if quality >= default_quality:
+            print(f'Choosing quality {quality} for current video')
+            return f'{quality}'
+    print(f'Choosing quality {sorted_ress[-1]} for current video')
+    return f'{sorted_ress[-1]}'
+
+
+def get_sprite(url = None, meta = None, simulate = False):
+    """[width, height, columns, duration]"""
+    try:
+        format = None
+        formats = meta.get('formats') or []
+        formats.sort(key=lambda f: f.get('width') or 0)
+
+        for f in formats:
+            if not f.get('columns'): continue
+            if f.get('width') and f.get('height'): format = f
+            if (f.get('width') or 0) >= 150 or (f.get('height') or 0) >= 150: break
+
+        if not format:
+            print('Video does not contain sprite data')
+            return None
+        if not simulate:
+            image_urls = []
+            if format.get('fragments'):
+                for fragment in format['fragments']:
+                    image_urls.append(fragment['url'])
+            else:
+                image_urls.append(format['url'])
+
+            downloaded_images = []
+            width = 0
+            height = 0
+
+            for i, img_url in enumerate(image_urls):
+                response = fetch_safe(img_url, proxies=get_proxy(url, True))
+                response.raise_for_status()
+                img = Image.open(io.BytesIO(response.content))
+
+                if i == 0: width = img.width
+                height += img.height
+
+                downloaded_images.append(img)
+
+            final_sprite = Image.new('RGB', (width, height))
+            current_y = 0
+            for img in downloaded_images:
+                final_sprite.paste(img, (0, current_y))
+                current_y += img.height
+
+            target_width = format['width'] * format['columns']
+            target_height = int(math.ceil(format['fps'] * meta['duration'] / format['columns'] - 0.01) * format['height'])
+            if final_sprite.width != target_width or final_sprite.height != target_height:
+                print(f'Warning: sprite dimensions incorrect - resizing {final_sprite.width}x{final_sprite.height} -> {target_width}x{target_height}')
+                final_sprite = final_sprite.resize((target_width, target_height), resample=Image.Resampling.LANCZOS)
+            final_sprite.save(os.path.join(get_data_dir(url), 'sprite.jpg'))
+            compress_image(url, 'sprite')
+
+        return [format['width'], format['height'], format['columns'], 1 / format['fps']]
+    except Exception as e:
+        pprint_exc(e)
+        return None
+
+
+def compress_image(url: str, media_type: str) -> None:
+    path = check_media(url, media_type)
+    if not path or os.path.splitext(path)[1].lower() == ".webp":
+        return
+
+    output = os.path.splitext(path)[0] + ".webp"
+    ff = FFMPEG(url, ["-i", path, output])
+    if not ff.success: return
+    os.remove(path)
+    print(f'Compressed {media_type}')
+
+
+def search(query, search_engine='auto'):
+    print(f'Searching for {query}')
+    ydl_opts = {'quiet': True, 'skip_download': True, 'default_search': search_engine}
+    ydl_opts.update(ydl_global_opts)
+    del ydl_opts['playlistend']
+    info = YTDLP.get_info(query, ydl_opts)
+    entries = info.get('entries') or []
+    for entry in entries:
+        entry['original_url'] = normalize_url(append_query_to_url(entry['original_url'], query))
+    return entries
+
+
+def generate_chapters(meta: dict):
+    chapters = []
+    try:
+        meta_chapters = meta.get('chapters') or []
+        for chapter in meta_chapters:
+            chapters.append({'time': chapter.get('start_time'), 'label': chapter.get('title')})
+        if chapters: return chapters
+    except: pass
+    try:
+        desc = meta.get('description')
+        last_time = 0
+        def time_to_int(t: str):
+            parts = t.split(':')
+            secs = int(parts[-1])
+            if len(parts) >= 2: secs += int(parts[-2]) * 60
+            if len(parts) >= 3: secs += int(parts[-3]) * 3600
+            return secs
+
+        for line in desc.splitlines():
+            if line and line[0].isdigit():
+                line = line.strip()
+                lastchar = 0
+                for i in line:
+                    if i.isdigit() or i == ':':
+                        lastchar += 1
+                if lastchar < 3 or ':' not in line[0:lastchar]: continue
+                time = time_to_int(line[0:lastchar])
+                if time < last_time: break
+                last_time = time
+                chapters.append({'time': time, 'label': line[lastchar:].strip()})
+        return chapters if len(chapters) > 1 else []
+    except Exception:
+        return []
+
+
+def get_video_info(meta: dict):
+    info = {}
+    info['title'] = meta.get('title') or ''
+    info['uploader'] = meta.get('uploader') or ''
+    info['sources'] = get_all_video_sources(meta=meta)
+    info['duration'] = f'{meta.get("duration") or 0}'
+    info['subtitles'] = get_subtitles(meta)
+    info['width'] = meta.get('width')
+    info['height'] = meta.get('height')
+    info['url'] = meta.get('original_url')
+    info['default_quality'] = 'audio' if 'Music' in (meta.get('categories') or []) and audio_visualizer else get_good_quality(info['sources'])
+    info['autoplay'] = autoplay
+    info['min_live_buffer'] = min_live_buffer
+    info['always_transcode'] = always_transcode
+    info['disable_transcoding'] = disable_transcoding
+    info['hls_duration'] = hls_duration
+    info['hls_audio_duration'] = hls_audio_duration
+    info['playlist_support'] = playlist_support
+    info['auto_bg_playback'] = auto_bg_playback
+    info['audio_visualizer'] = audio_visualizer
+    info['autoskip_sb_segments'] = autoskip_sb_segments
+    info['chapters'] = generate_chapters(meta)
+    auto_sprite = get_sprite(info['url'], meta, True)
+    info['generate_sprite_below'] = max_video_duration if (auto_sprite and generate_sprite_below > 0) else generate_sprite_below
+    info['sprite'] = auto_sprite or [160, 90, 10, 10]
+    if meta.get('is_live'):
+        info['subtitles'] = []
+        info['duration'] = '0'
+    info['alerts'] = check_alerts()
+    return info
+
+
+def normalize_url(url):
+    parsed_url = urlparse(url)
+    query_params = parse_qs(parsed_url.query)
+    strip_query = ['pp', 'themeRefresh', 'utm_source', 'utm_medium', 'utm_campaign', 'utm_term', 'utm_content', 'fbclid', 'igshid', 'srcid']
+    for i in strip_query:
+        if i in query_params.keys():
+            del query_params[i]
+
+    new_query = urlencode(query_params, doseq=True)
+    url = urlunparse(parsed_url._replace(query=new_query))
+
+    if '.' not in url:
+        url = 'https://youtube.com/watch?v=' + url
+    if '/watch?v=' in url and not 'youtube.' in url.split('/watch?v=')[0]:
+        yt_url = 'https://youtube.com/watch?v=' + url.split('/watch?v=')[1]
+        try:
+            if get_meta(yt_url):
+                url = yt_url
+        except: pass
+    return url
+
+
+def get_url(req):
+    candidates = [req.args.get(k) for k in ('v', 'url', 'link') if req.args.get(k)]
+    url = candidates[0] if candidates else None
+    # Android share sheet sends text like "Video title https://youtu.be/ID?si=..." - pull the link out
+    for c in candidates:
+        if m := re.search(r'https?://\S+', c):
+            url = m.group(0)
+            break
+    if url is None or len(url) < 3: return None
+    return normalize_url(url)
+
+
+def append_query_to_url(url, query):
+    parsed_url = urlparse(url)
+    query_params = parse_qs(parsed_url.query)
+    query_params['q'] = query
+    new_query_string = urlencode(query_params, doseq=True)
+    return urlunparse(parsed_url._replace(query=new_query_string))

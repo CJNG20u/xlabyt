@@ -1,0 +1,380 @@
+import os
+import signal
+import sys
+from flask import Flask, render_template, request, jsonify, Response, send_file
+from io import BytesIO
+from starlette.middleware.wsgi import WSGIMiddleware
+from urllib.parse import quote_plus
+
+from main import *
+from addons import *
+from external import External
+import browse as yt_browse
+
+
+app = Flask(__name__)
+wsgi = WSGIMiddleware(app)
+
+_shutting_down = False
+
+def signal_handler(signum, frame):
+    global _shutting_down
+    if _shutting_down: os._exit(1)
+    _shutting_down = True
+    print(f"Signal {signum} received. Shutting down...")
+    try:
+        Processes.rm_all()
+    finally:
+        os._exit(0)
+
+signal.signal(signal.SIGINT, signal_handler)
+signal.signal(signal.SIGTERM, signal_handler)
+
+
+@app.route('/')
+@app.route('/browse')
+def browse_page():
+    return render_template('browse.html', app_title=app_title, theme_color=theme_color, amoled_bg=amoled_bg, has_cookies=yt_browse.has_cookies())
+
+
+@app.route('/api/browse')
+def api_browse():
+    try:
+        data = yt_browse.browse(
+            request.args.get('kind', 'search'),
+            page=request.args.get('page', 1, type=int),
+            q=(request.args.get('q') or '').strip(),
+            url=(request.args.get('url') or '').strip(),
+            tab=request.args.get('tab', 'videos'),
+        )
+        return jsonify(data)
+    except Exception as e:
+        msg = str(e)
+        if 'cookie' in msg.lower() or 'sign in' in msg.lower() or 'login' in msg.lower():
+            return jsonify({'error': 'This feed needs your YouTube cookies (mount cookies.txt).', 'needs_cookies': True}), 401
+        pprint_exc(e)
+        return jsonify({'error': msg.splitlines()[0][:300] if msg else 'Failed to load'}), 500
+
+
+@app.route('/api/related')
+def api_related():
+    try:
+        return jsonify(yt_browse.related(get_url(request) or '', (request.args.get('title') or '').strip()))
+    except Exception as e:
+        pprint_exc(e)
+        return jsonify({'items': [], 'error': str(e)[:300]}), 500
+
+
+@app.route('/api/details')
+def api_details():
+    try:
+        url = get_url(request)
+        if not url: return jsonify({'error': 'URL parameter is required'}), 400
+        return jsonify(yt_browse.details(get_meta(url)))
+    except Exception as e:
+        return pprint_exc(e)
+
+
+@app.route('/api/comments')
+def api_comments():
+    try:
+        url = get_url(request)
+        if not url: return jsonify({'error': 'URL parameter is required'}), 400
+        return jsonify(yt_browse.comments(url, request.args.get('sort', 'top')))
+    except Exception as e:
+        pprint_exc(e)
+        return jsonify({'comments': [], 'error': str(e).splitlines()[0][:300] if str(e) else 'Failed'}), 500
+
+
+@app.route('/classic')
+def index():
+    print('Started serving root')
+    ydl_version = External.get_ytdlp_version()
+    js_runtime_version = External.get_js_runtime_version(js_runtime)
+    ffmpeg_version = External.get_ffmpeg_version(ffmpeg)
+    print('Stopped serving root')
+    return render_template('index.html', ydl_version=ydl_version, app_version=app_version, js_runtime_version=js_runtime_version, ffmpeg_version=ffmpeg_version, app_title=app_title, theme_color=theme_color, amoled_bg=amoled_bg)
+
+
+@app.route('/watch')
+def watch():
+    print('Started serving watch')
+    ydl_version = External.get_ytdlp_version()
+    js_runtime_version = External.get_js_runtime_version(js_runtime)
+    ffmpeg_version = External.get_ffmpeg_version(ffmpeg)
+    url = get_url(request)
+    
+    video_width = 1280
+    video_height = 720
+    video_title = app_title
+
+    if check_media(url, 'meta'):
+        meta = get_meta(url)
+        video_width = meta.get('width') or video_width
+        video_height = meta.get('height') or video_height
+        video_title = meta.get('title') or app_title
+    preload(url)
+
+    print('Stopped serving watch')
+    return render_template('watch.html', original_url=url, ydl_version=ydl_version, app_version=app_version, js_runtime_version=js_runtime_version, ffmpeg_version=ffmpeg_version, app_title=app_title, theme_color=theme_color, amoled_bg=amoled_bg, video_width=video_width, video_height=video_height, video_title=video_title)
+
+
+@app.route('/iframe')
+def iframe():
+    print('Started serving iframe')
+    url = get_url(request)
+    
+    video_width = 1280
+    video_height = 720
+
+    if check_media(url, 'meta'):
+        meta = get_meta(url)
+        video_width = meta.get('width') or video_width
+        video_height = meta.get('height') or video_height
+    preload(url)
+
+    print('Stopped serving iframe')
+    return render_template('iframe.html', app_title=app_title, theme_color=theme_color, video_width=video_width, video_height=video_height)
+
+
+@app.route('/thumb')
+def serve_thumbnail():
+    url = get_url(request)
+    return host_file(url, 'thumb')
+
+
+@app.route('/sprite')
+def serve_sprite():
+    url = get_url(request)
+    return host_file(url, 'sprite')
+
+
+@app.route('/picture')
+def serve_picture():
+    start_time = request.args.get('start', 0, type=float)
+    media_type = f'picture_{start_time:.1f}-0.0'
+    url = get_url(request)
+    video_title = get_meta(url).get('title')
+    return host_file(url, media_type, download_name=video_title)
+
+
+@app.route('/sb')
+def get_sponsor_segments():
+    return get_sb(get_url(request)) or []
+
+
+@app.route('/raw')
+def raw():
+    return f'<video controls autoplay><source src="/download?url={quote_plus(get_url(request))}" type="video/mp4"></video>'
+
+
+@app.route('/download')
+def download_media():
+    try:
+        res = (request.args.get('quality') or '')
+        start_time = request.args.get('start', 0, type=float)
+        end_time = request.args.get('end', 0, type=float)
+        
+        media_type = 'audio' if res == 'audio' else f'video-{res}'.removesuffix('-')
+        
+        if start_time > 0 or end_time > 0:
+            media_type += f'_{start_time:.1f}-{end_time:.1f}'
+
+        url = get_url(request)
+        video_title = get_meta(url).get('title')
+        return host_file(url, media_type, download_name=video_title)
+
+    except Exception as e:
+        return pprint_exc(e)
+
+
+@app.route('/low')
+def download_low_quality():
+    try:
+        return host_file(get_url(request), 'low')
+    except Exception as e:
+        return pprint_exc(e)
+
+
+@app.route('/external')
+def serve_external():
+    url = get_url(request)
+    return stream_media_file(url, request.args.get('src'), request.args.get('fmt_id'), request.headers.get('Range'))
+
+
+@app.route('/subtitle')
+def serve_subtitle():
+    return host_file(get_url(request), f'sub-{request.args.get("lang")}')
+
+
+@app.route('/info')
+def serve_info():
+    try:
+        url = get_url(request)
+        if not url: return jsonify({"error": "URL parameter is required"}), 400
+        return get_video_info(get_meta(url))
+    except Exception as e:
+        return pprint_exc(e)
+
+
+@app.route('/manifest.json')
+def serve_manifest():
+    manifest = render_template('manifest.json', app_title=app_title, theme_color=theme_color, amoled_bg=amoled_bg)
+    return Response(manifest.encode('utf-8'), mimetype='application/manifest+json')
+
+
+@app.route('/playlist')
+def serve_playlist():
+    try:
+        return host_file(get_url(request), 'playlist')
+    except Exception as e:
+        return pprint_exc(e)
+
+
+@app.route('/favicon.svg')
+def serve_favicon():
+    with open(os.path.join(app.static_folder, 'favicon.svg'), 'r') as f:
+        favicon = f.read()
+    favicon = favicon.replace('#ff7300', theme_color)
+    return Response(favicon, mimetype='image/svg+xml')
+
+
+def _draw_icon(size: int, maskable: bool = False, transparent: bool = False):
+    """App icons drawn from logo.py on a solid background, so iOS/Android home-screen
+    icons don't end up black or white-boxed. Maskable icons stay inside the safe zone."""
+    from logo import draw_logo, hex_to_rgba
+
+    size = max(16, min(size, 1024))
+    bg = (0, 0, 0, 0) if transparent else ((0, 0, 0, 255) if amoled_bg else (15, 15, 15, 255))
+    img = draw_logo(size, color=hex_to_rgba(theme_color), bg=bg, scale=0.62 if maskable else (1.0 if transparent else 0.80))
+    out = BytesIO()
+    img.save(out, format='PNG', optimize=True)
+    resp = Response(out.getvalue(), mimetype='image/png')
+    resp.headers['Cache-Control'] = 'public, max-age=86400'
+    return resp
+
+
+@app.route('/favicon<int:size>.png')
+def serve_favicon_png(size=512):
+    return _draw_icon(size, transparent=request.args.get('bg') != '1')
+
+
+@app.route('/icon-<int:size>.png')
+def serve_app_icon(size=512):
+    return _draw_icon(size)
+
+
+@app.route('/icon-maskable-<int:size>.png')
+def serve_maskable_icon(size=512):
+    return _draw_icon(size, maskable=True)
+
+
+@app.route('/sw.js')
+def serve_sw():
+    with open(os.path.join(app.static_folder, 'sw.js'), 'r') as f:
+        sw = f.read()
+    resp = Response(sw, mimetype='text/javascript')
+    resp.headers['Cache-Control'] = 'no-cache'
+    return resp
+
+
+@app.route('/extension.js')
+def serve_extension():
+    if os.path.exists(os.path.join(app.static_folder, 'extension.js')):
+        with open(os.path.join(app.static_folder, 'extension.js'), 'r') as f:
+            extension = f.read()
+    elif os.path.exists(os.path.join('../extension', 'extension.js')):
+        with open(os.path.join('../extension', 'extension.js'), 'r') as f:
+            extension = f.read()
+    else:
+        return stream_media_file(None, 'https://raw.githubusercontent.com/CJNG20u/xlabyt/refs/heads/main/extension/extension.js')
+    request_url = request.url_root.rstrip('/')
+    if p := request.headers.get('X-Forwarded-Proto'): request_url = request_url.replace('http', p, 1)
+
+    extension = extension.replace('https://github.com/CJNG20u/xlabyt/raw/main/extension', request_url).replace('extension.js', 'extension.user.js')
+    extension = extension.replace('https://github.com/CJNG20u/xlabyt/raw/main/src/static', request_url)
+    extension = extension.replace('1.0.0', External.get_app_version(), 1)
+    extension = extension.replace('xlab-yt', app_title, 1)
+    extension = extension.replace("var playerUrl = '';", f"var playerUrl = '{request_url}';", 1)
+
+    return Response(extension, mimetype='text/javascript')
+
+
+@app.route('/extension.user.js')
+def serve_userscript():
+    return serve_extension()
+
+
+@app.route('/hls')
+def download_hls():
+    try:
+        res = (request.args.get('quality') or '')  
+        media_type = f'hls-{res}'.removesuffix('-')
+        return host_file(get_url(request), media_type)
+    except Exception as e:
+        return pprint_exc(e)
+
+
+@app.route('/hls_segment')
+def hls_segment():
+    url = get_url(request)
+    data_dir = get_data_dir(url)
+    quality = request.args.get('quality')
+    seg = request.args.get('seg')
+    if '/' in f'{quality}{seg}' or '\\' in f'{quality}{seg}': return jsonify({"error": "Invalid media type"}), 400
+    file = os.path.join(data_dir, f'hls_segment-{quality}/segment{seg:>0{4}}.ts')
+
+    if not os.path.exists(file):
+        media_type = f'hls-{quality}'.removesuffix('-')
+        host_file(get_url(request), media_type)
+        return jsonify({"error": "File not found"}), 404
+
+    return send_file(file)
+
+
+@app.route('/search')
+def serve_search():
+    try:
+        query = request.args.get('q')
+        meta = search(query)[0]
+        url = meta.get('original_url') or ''
+        final_url = append_query_to_url(url, query)
+
+        preload(final_url, meta)
+        return final_url
+    except Exception as e:
+        return pprint_exc(e)
+
+
+@app.route('/cookies', methods=['POST'])
+def cookies_endpoint():
+    try:
+        url = get_url(request)
+        cookies = request.form.get('cookies')
+        if not cookies: return jsonify({"error": "cookies are required"}), 400
+        if file := get_global_cookies_file():
+            with open(file, 'r') as f:
+                cookies += '\n' + f.read()
+        os.makedirs(get_data_dir(url), exist_ok=True)
+        with open(os.path.join(get_data_dir(url), 'cookies.txt'), 'w') as f:
+            f.write(cookies)
+        return "OK", 200
+
+    except Exception as e:
+        return pprint_exc(e)
+
+
+@app.route('/cancel')
+def cancel_download():
+    url = get_url(request)
+    if not url: return jsonify({"error": "URL parameter is required"}), 400
+    cancelled_count = Processes.rm_all(url)
+    return jsonify({"message": f"Cancelled {cancelled_count} ongoing processes"}), 200
+
+
+@app.after_request
+def after_request(response):
+    response.headers.setdefault('Accept-Ranges', 'bytes')
+    response.headers.setdefault('X-Content-Type-Options', 'nosniff')
+    response.headers.setdefault('Content-Security-Policy', "frame-src *")
+    return response
