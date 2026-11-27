@@ -56,6 +56,13 @@ def api_browse():
         return jsonify({'error': msg.splitlines()[0][:300] if msg else 'Failed to load'}), 500
 
 
+@app.route('/api/prefetch', methods=['GET', 'POST'])
+def api_prefetch():
+    url = get_url(request)
+    started = yt_browse.prefetch(url) if url else False
+    return jsonify({'started': started}), 202
+
+
 @app.route('/api/related')
 def api_related():
     try:

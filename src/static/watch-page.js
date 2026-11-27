@@ -12,6 +12,12 @@
     let pageTitle = metaEl.dataset.title || '';
     let related = [];
 
+const prefetched = new Set();
+    function prefetch(url) {
+        if (!url || prefetched.has(url)) return;
+        prefetched.add(url);
+        fetch('/api/prefetch?url=' + encodeURIComponent(url), {method: 'POST', keepalive: true}).catch(() => {});
+    }
     const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c]));
     const store = {
         get(k, d) { try { return JSON.parse(localStorage.getItem(k)) ?? d; } catch { return d; } },
@@ -126,6 +132,8 @@
         fetch(`/api/related?url=${enc}&title=${encodeURIComponent(pageTitle)}`).then(r => r.json()).then(d => {
             related = d.items || [];
             relEl.innerHTML = related.length ? related.map(relCard).join('') : '<div class="yt-empty">No recommendations for this video.</div>';
+            // the autoplay pick is resolved while this video plays, so it starts right away
+            if (related[0]) setTimeout(() => prefetch(related[0].url), 3000);
         }).catch(() => { relEl.innerHTML = '<div class="yt-empty">Could not load recommendations.</div>'; });
     }
     setTimeout(loadRelated, 4000); // don't wait forever on details
@@ -143,6 +151,15 @@
         r.unshift(it);
         store.set('xlabyt.recent', r.slice(0, 200));
     }
+    let relHover = null;
+    relEl.addEventListener('pointerover', e => {
+        const a = e.target.closest('[data-idx]');
+        if (!a || e.pointerType !== 'mouse') return;
+        clearTimeout(relHover);
+        relHover = setTimeout(() => prefetch(related[a.dataset.idx]?.url), 120);
+    });
+    relEl.addEventListener('pointerout', () => clearTimeout(relHover));
+    relEl.addEventListener('pointerdown', e => { const a = e.target.closest('[data-idx]'); if (a) prefetch(related[a.dataset.idx]?.url); }, {passive: true});
     relEl.addEventListener('click', e => {
         const a = e.target.closest('[data-idx]');
         if (a && related[a.dataset.idx]) remember(related[a.dataset.idx]);

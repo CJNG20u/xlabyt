@@ -244,7 +244,27 @@ def related(url: str, title: str = '') -> dict:
     return _cached(f'related|{vid or url}', build)
 
 
+def _page_details(url: str) -> dict:
+    """Fast-path metadata skips the watch page, so likes / upload date / subscribers are missing.
+    Fetch them separately (android_vr, no JS challenges) without holding up playback."""
+    def build():
+        opts = {'quiet': True, 'skip_download': True, 'extractor_retries': 0, 'socket_timeout': 6,
+                'extractor_args': {'youtube': {'player_client': ['android_vr']}}}
+        opts.update({k: v for k, v in ydl_global_opts.items() if k not in ('extractor_args',)})
+        info = YTDLP.get_info(url, opts, fallback=False) or {}
+        keys = ('like_count', 'upload_date', 'timestamp', 'release_timestamp', 'channel_follower_count', 'comment_count',
+                'channel_is_verified', 'channel_url', 'uploader_url', 'tags', 'concurrent_view_count', 'view_count', 'description')
+        return {k: info.get(k) for k in keys if info.get(k) is not None}
+    return _cached(f'pagedetails|{url}', build, ttl=3600)
+
+
 def details(meta: dict) -> dict:
+    if meta.get('_fast_path') and not meta.get('upload_date') and meta.get('original_url'):
+        try:
+            extra = _page_details(meta['original_url'])
+            meta = meta | {k: v for k, v in extra.items() if k != 'timestamp'}
+        except Exception as e:
+            pprint_exc(e)
     channel_url = meta.get('channel_url') or meta.get('uploader_url') or ''
     if not channel_url and meta.get('channel_id'):
         channel_url = f'https://www.youtube.com/channel/{meta["channel_id"]}'
@@ -305,3 +325,25 @@ def comments(url: str, sort: str = 'top') -> dict:
         return {'count': info.get('comment_count'), 'comments': threads}
 
     return _cached(f'comments|{sort}|{url}', build, ttl=1800)
+
+
+_prefetching: set[str] = set()
+_prefetch_lock = Lock()
+MAX_PREFETCH = int(os.environ.get('MAX_PREFETCH', '3'))
+
+
+def prefetch(url: str) -> bool:
+    """Start resolving a video in the background (hover / touch / up next), like xlab-player's prefetch."""
+    from addons import check_media, get_meta
+    from threading import Thread
+    if not url or check_media(url, 'meta'): return False
+    with _prefetch_lock:
+        if url in _prefetching or len(_prefetching) >= MAX_PREFETCH: return False
+        _prefetching.add(url)
+    def run():
+        try: get_meta(url)
+        except Exception as e: print(f'[prefetch] {url}: {e}')
+        finally:
+            with _prefetch_lock: _prefetching.discard(url)
+    Thread(target=run, daemon=True).start()
+    return True

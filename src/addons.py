@@ -23,6 +23,7 @@ from external import External
 from ffmpeg import FFMPEG
 from main import *
 from sb import SponsorBlock
+import fastpath
 
 
 
@@ -226,7 +227,7 @@ class YTDLP:
 
 
     @staticmethod
-    def get_info(url, opts):
+    def get_info(url, opts, fallback = True):
         if (proxy := get_proxy(url)): opts["proxy"] = proxy
         logger = YTDLP.Logger(url, opts, 'extract_info')
         add_to_path(js_runtime)
@@ -234,6 +235,9 @@ class YTDLP:
             with YTDLP.ydl(copy.deepcopy(opts) | {'logger': logger}) as ydl:
                 return ydl.sanitize_info(ydl.extract_info(url, download=False))
         except Exception as e:
+            if not fallback:
+                logger.finish()
+                raise
             if (cookies := get_global_cookies_file(True)):
                 pprint_exc(e)
                 logger.error('An error occured when downloading. Downloading with cookies...')
@@ -1043,14 +1047,32 @@ def get_meta(url: str, max_meta_age = None, force = False):
         print(f'downloading meta for {url}')
         possible_meta = None
         last_exception = None
-        for i in range(len(proxies) * 2 + 1):
+        per_url_cookies = check_media(url, 'cookies') or get_global_cookies_file()
+        # xlab-player style fast path first (android_vr, no JS challenge solving); cookies need the normal path
+        fast = fastpath.available(url) and not per_url_cookies
+        for attempt in range(len(proxies) * 2 + 1 + (1 if fast else 0)):
+            fast_try = fast and attempt == 0
+            i = attempt - (1 if fast else 0)
+            vd = None
+            started = time.time()
             try:
                 ydl_opts = {'skip_download': True, 'extractor_retries': 0, 'socket_timeout': 5}
                 if i < len(proxies): ydl_opts['socket_timeout'] = 2
                 ydl_opts.update(ydl_global_opts)
-                if cookies := check_media(url, 'cookies') or get_global_cookies_file(): ydl_opts["cookiefile"] = cookies
-                info = YTDLP.get_info(url, ydl_opts)
+                if fast_try:
+                    fast_opts, vd = fastpath.options(get_proxy(url))
+                    ydl_opts.update(fast_opts)
+                elif per_url_cookies: ydl_opts["cookiefile"] = per_url_cookies
+                info = YTDLP.get_info(url, ydl_opts, fallback=not fast_try)
                 if info.get('entries'): info = info['entries'][0]
+                if fast_try:
+                    if not fastpath.usable(info): raise RuntimeError('fast path returned no playable video formats')
+                    info['original_url'] = url
+                    os.makedirs(get_data_dir(url), exist_ok=True)
+                    if not check_meta_validity(url, info): raise RuntimeError('fast path stream failed its first probe')
+                    info['_fast_path'] = True
+                    fastpath.success()
+                    print(f'[fast-path] {url} resolved in {time.time() - started:.2f}s')
 
                 if not info.get('duration') or not info.get('width') or not info.get('height'):
                     try:
@@ -1072,11 +1094,14 @@ def get_meta(url: str, max_meta_age = None, force = False):
                 info['original_url'] = url
                 info['timestamp'] = int(time.time())
                 possible_meta = info
-                check_meta_validity(url, info)
+                if not info.get('_fast_path'): check_meta_validity(url, info)
                 with open(os.path.join(get_data_dir(url), 'meta.json'), 'w') as f:
                     json.dump(info, f)
                     return info
             except Exception as e:
+                if fast_try:
+                    fastpath.failure(e, vd)
+                    continue
                 pprint_exc(e)
                 advance_proxy(url, True)
                 last_exception = e

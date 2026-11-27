@@ -344,6 +344,23 @@ main.addEventListener('click', e => {
     try { rememberPlay(JSON.parse(c.dataset.play)); } catch {}
 });
 
+const prefetched = new Set();
+function prefetch(url) {
+    if (!url || prefetched.has(url)) return;
+    prefetched.add(url);
+    fetch('/api/prefetch?url=' + encodeURIComponent(url), {method: 'POST', keepalive: true}).catch(() => {});
+}
+let hoverTimer = null;
+const playUrl = el => { try { return JSON.parse(el.dataset.play).url; } catch { return null; } };
+main.addEventListener('pointerover', e => {
+    const c = e.target.closest('[data-play]');
+    if (!c || e.pointerType !== 'mouse') return;
+    clearTimeout(hoverTimer);
+    hoverTimer = setTimeout(() => prefetch(playUrl(c)), 120);
+});
+main.addEventListener('pointerout', e => { if (e.target.closest('[data-play]')) clearTimeout(hoverTimer); });
+main.addEventListener('pointerdown', e => { const c = e.target.closest('[data-play]'); if (c) prefetch(playUrl(c)); }, {passive: true});
+
 /* ---------- API ---------- */
 async function api(params) {
     const r = await fetch('/api/browse?' + new URLSearchParams(params));
@@ -593,7 +610,7 @@ function shortsView(p) {
         });
         el.querySelector('.short-frame').prepend(f);
         // warm up the next two so they start faster
-        for (const k of [i + 1, i + 2]) if (st.items[k] && !st.items[k]._warm) { st.items[k]._warm = 1; fetch('/info?url=' + encodeURIComponent(st.items[k].url)).catch(() => {}); }
+        for (const k of [i + 1, i + 2]) if (st.items[k]) prefetch(st.items[k].url);
         if (i >= st.items.length - 4) loadMore();
     }
 
