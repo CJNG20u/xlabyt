@@ -1,81 +1,180 @@
-<div align="center">
-  <img src="src/static/favicon.svg" width="120px" />
+<h1 align="center">xlab-yt</h1>
 
-# xlab-yt
+<p align="center">
+  <img src="src/static/favicon.svg" width="128" alt="xlab-yt logo">
+</p>
 
-### Self-hosted YouTube front end, powered by yt-dlp
+<p align="center"><b>YouTube, played from your own server.</b></p>
 
-Self-hosted YT web player that works on iOS, Android and PC: browse, search and watch YouTube from your own server, no ads, no tracking.
+<p align="center"><a href="#install">Install</a> · <a href="#key-features">Features</a> · <a href="#your-youtube-account-optional">YouTube account</a> · <a href="#install-on-your-phone-pwa">Phone app</a> · <a href="#uninstall">Uninstall</a></p>
 
-</div>
+Self-hosted YouTube web app & PWA for iOS, Android and PC: a YouTube-style home, search, channels and watch page, with videos streamed through your server by yt-dlp. No ads, SponsorBlock skipping, background playback on your phone, and optional sign-in with your own YouTube account.
 
-## Features
 
-- **YouTube-style home** – search with infinite scroll, channel pages (Videos / Shorts / Live / Playlists), playlists
-- **Watch page** – video player, title and channel, likes, expandable description with clickable timestamps, read-only comments with replies
-- **Up next** – recommendations from the video's YouTube mix, with an autoplay countdown
-- **Following** – follow channels without a Google account; their newest uploads fill your home page
-- **Your YouTube account (optional)** – mount `cookies.txt` to get your real Home feed, Subscriptions, History and Watch later
-- **Installable app (PWA)** for Android and iPhone, with "Share to xlab-yt" from the YouTube app on Android
-- Player: quality switching, livestreams, SponsorBlock skipping, subtitles, chapters, seek previews, background playback, loop, downloads
-- yt-dlp updates itself daily, and any site yt-dlp supports can still be played by pasting its link
-- Docker images for `amd64` and `arm64` (Raspberry Pi)
+[![Docker image](https://github.com/CJNG20u/xlabyt/actions/workflows/docker-publish.yml/badge.svg)](https://github.com/CJNG20u/xlabyt/pkgs/container/xlabyt)
 
-## Run it
+🐳 **Docker image:** `ghcr.io/cjng20u/xlabyt:latest` (amd64 + arm64)
 
-```yaml
-# compose.yml
-services:
-    xlab-yt:
-        container_name: xlab-yt
-        image: ghcr.io/cjng20u/xlabyt:latest
-        restart: unless-stopped
-        ports:
-            - 5000:5000
-        # volumes:
-        #     - ./cookies.txt:/app/cookies.txt   # optional, see below
-        # env_file:
-        #     - .env                             # optional, see src/example.env
+```bash
+docker pull ghcr.io/cjng20u/xlabyt:latest
 ```
 
-```
+## Why xlab-yt?
+
+The YouTube app and website are built around ads, autoplay rabbit holes and features locked behind Premium. Other front ends either break every time YouTube changes something or make you paste a link for every video.
+
+**xlab-yt** keeps the YouTube layout you already know and changes what happens underneath:
+- **Streams through your server:** videos are fetched and played by [yt-dlp](https://github.com/yt-dlp/yt-dlp) on your server, so there are no ads and no YouTube player scripts on your devices. Only thumbnails load straight from YouTube's image servers.
+- **Keeps working:** yt-dlp updates itself every day inside the container, so YouTube changes are usually fixed before you notice them.
+- **Premium-style playback for free:** background and lock-screen playback on your phone, downloads, loop, and automatic SponsorBlock skipping.
+- **Your choice of account:** follow channels with no Google account at all, or mount your own `cookies.txt` to get your real Home feed and Subscriptions.
+- **One small container:** no database, no login to manage, and the same install as every other xlab app.
+
+---
+
+## Key Features
+
+- **YouTube-style Home & Search**: Infinite-scroll search results, channel pages (Videos / Shorts / Live / Playlists) and playlists. Paste any link into the search bar to play it.
+- **Watch Page**: Full-width player with title, channel and subscribers, likes, an expandable description with clickable timestamps, and read-only comments (top / newest, with replies).
+- **Up Next & Autoplay**: Recommendations from the video's YouTube mix, topped up with related search results, plus a 5-second autoplay countdown you can cancel.
+- **Following Without an Account**: Follow channels from their page; their newest uploads fill your Home page. Saved in your browser.
+- **Your YouTube Account (optional)**: Mount `cookies.txt` for your real Home recommendations, Subscriptions, History and Watch later.
+- **Player**: Quality switching, livestreams, subtitles, chapters, seek previews, SponsorBlock auto-skip, loop, picture-in-picture, background playback and downloads.
+- **Installable Mobile & Desktop PWA**: Home-screen app for Android, iOS/iPadOS and desktop, with notch-safe layout, a back button in standalone mode, and **Share → xlab-yt** from the YouTube app on Android.
+- **Any yt-dlp Site**: Besides YouTube, paste a link from any site yt-dlp supports and play it in the same player.
+
+---
+
+### Prerequisites
+
+- Docker & Docker Compose v2
+- For the phone app: an **HTTPS** address (Caddy, Nginx or a Cloudflare Tunnel in front of port `5000`)
+
+## Install
+
+Every xlab app installs and updates the same way: one folder, one `docker-compose.yml`, one `.env`.
+
+```bash
+mkdir -p /opt/xlab-yt && cd /opt/xlab-yt
+curl -fsSLO https://raw.githubusercontent.com/CJNG20u/xlabyt/main/docker-compose.yml
+curl -fsSL https://raw.githubusercontent.com/CJNG20u/xlabyt/main/.env.example -o .env
 docker compose up -d
 ```
 
-Open `http://<server>:5000`. To update: `docker compose pull && docker compose up -d`.
+Open `http://<host-ip>:5000`. Search for something, or paste a video link.
 
-To build from source instead: clone the repo, switch `compose.yml` to the `build:` block, then run `docker compose up -d --build`.
+Everything in `.env` is optional: app name and accent color, playback quality, SponsorBlock categories, proxies.
 
-### Your YouTube account (optional)
+## Update
 
-Export your YouTube cookies in Netscape format (e.g. with a "Get cookies.txt" browser extension, while signed in to youtube.com), save the file as `cookies.txt` and mount it at `/app/cookies.txt`. Home then shows your recommendations, and Subscriptions, History and Watch later work. Without cookies, use **Follow** on channel pages.
+```bash
+cd /opt/xlab-yt
+docker compose pull && docker compose up -d
+```
 
-### Install on your phone
+Images are built automatically for `linux/amd64` and `linux/arm64`. `:latest` follows `main`; every release also gets its version tag and `:stable` (for example `:v1.0.0`), so you can pin one with `image: ghcr.io/cjng20u/xlabyt:v1.0.0`.
 
-Phones only install web apps over **HTTPS**, so put xlab-yt behind a reverse proxy (Caddy, Nginx, Cloudflare Tunnel…).
+## Build from source
 
-- **Android (Chrome):** tap **Install** on the banner, or ⋮ → *Install app*. Then share a video from the YouTube app → *xlab-yt*.
-- **iPhone / iPad (Safari):** Share → *Add to Home Screen*.
+```bash
+git clone https://github.com/CJNG20u/xlabyt.git
+cd xlabyt
+cp .env.example .env
+docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build
+```
 
-## Configuration
+---
 
-All options are environment variables. Copy `src/example.env` to `.env`, uncomment what you want, and enable `env_file` in `compose.yml`. Useful ones:
+## Your YouTube Account (optional)
 
-| Variable | Default | |
-|---|---|---|
-| `APP_TITLE` | `xlab-yt` | Name shown in the app and on the home screen |
-| `THEME_COLOR` | `#fa233b` | Accent and logo color |
-| `DEFAULT_QUALITY` / `MAX_QUALITY` | `720` / `2160` | Playback quality |
-| `AUTOSKIP_SB_SEGMENTS` | – | SponsorBlock categories to skip, e.g. `sponsor,selfpromo,intro` |
-| `PROXIES` | `local` | Proxies to try in order, e.g. `local,http://10.0.0.5:8888` |
-| `BROWSE_CACHE_TTL` | `600` | Seconds to cache search / feed / channel results |
+Without an account, use **Follow** on channel pages. To get your real Home feed, Subscriptions, History and Watch later, give xlab-yt your YouTube cookies:
 
-For NVIDIA hardware transcoding, install the NVIDIA Container Toolkit, use `Dockerfile.hwaccel` and `gpus: all` (see the comments in `compose.yml`).
+1. On your PC, install a cookies.txt exporter (**Get cookies.txt LOCALLY** for Chrome/Edge, **cookies.txt** for Firefox) and allow it in private windows.
+2. Open a **private window**, sign in to youtube.com, then go to `youtube.com/robots.txt` in the same tab.
+3. Export the cookies for youtube.com as `cookies.txt`, then **close the private window without signing out**.
+4. Copy the file next to `docker-compose.yml` **before** enabling it:
 
-## Releases
+```bash
+scp cookies.txt user@your-server:/opt/xlab-yt/cookies.txt
+```
 
-Every push to `main` publishes `ghcr.io/cjng20u/xlabyt:latest`. Publishing a GitHub release (e.g. `v1.0.0`) also tags `:v1.0.0` and `:stable`, and builds the desktop app (Windows / Linux) as release assets.
+5. Uncomment the `volumes` lines in `docker-compose.yml`:
 
-## Credits & license
+```yaml
+    volumes:
+      - ./cookies.txt:/app/cookies.txt
+```
 
-xlab-yt is based on [YT-DLP Web Player](https://github.com/Matszwe02/ytdlp_web_player) by Matszwe02, which provides the player, streaming and transcoding engine. xlab-yt additions © 2026 Ulises Sierra. Because it is built on GPL-2.0 code, the whole project is licensed under the **GNU GPL v2** (see `LICENSE`).
+6. Restart and check:
+
+```bash
+docker compose up -d
+docker exec xlab-yt head -1 /app/cookies.txt   # should print "# Netscape HTTP Cookie File"
+```
+
+The "No cookies.txt found" note in the side menu disappears and Home shows your recommendations.
+
+> ⚠️ If `cookies.txt` doesn't exist when the container starts, Docker creates an empty **folder** with that name. Fix: `docker compose down && rm -rf cookies.txt`, copy the real file, start again.
+
+> 🔐 `cookies.txt` can sign in to your Google account. Keep it only on the server and **never commit it to Git**. Cookies expire after a while: if Subscriptions starts asking for your account again, export a fresh file and restart.
+
+---
+
+## Install on your Phone (PWA)
+
+Phones only install web apps over **HTTPS**, so open xlab-yt through your reverse-proxy hostname.
+
+- **Android (Chrome):** tap **Install** on the banner, or ⋮ → *Install app*. Afterwards, share a video from the YouTube app → **xlab-yt** to open it in your player. Long-press the icon for Search, Subscriptions and Following shortcuts.
+- **iPhone / iPad (Safari):** tap **Share** → **Add to Home Screen**.
+
+If you installed an older version, remove the icon and add it again to refresh the name, icon and colors.
+
+> 💡 **mTLS / client certificates:** iPhone home-screen apps may not send client certificates even when Safari does. If the installed app can't connect but the website works, exempt the xlab-yt hostname from mTLS and protect it another way (VPN, Cloudflare Access, Authelia).
+
+### HTTPS Reverse Proxy
+
+**Caddy**
+
+```caddy
+yt.example.com {
+    reverse_proxy 127.0.0.1:5000
+}
+```
+
+> **Security**: xlab-yt has no built-in login. If you expose it outside your LAN, put it behind a VPN (Tailscale/WireGuard) or reverse-proxy auth (Authelia/Authentik/Cloudflare Access), especially when `cookies.txt` is mounted.
+
+---
+
+## Uninstall
+
+**Server**
+
+```bash
+cd /opt/xlab-yt
+docker compose down
+docker rmi ghcr.io/cjng20u/xlabyt:latest
+cd / && rm -rf /opt/xlab-yt        # also deletes your .env and cookies.txt
+```
+
+xlab-yt keeps no database. Cached video files live inside the container and are removed with it.
+
+**Phone & browser**
+
+- **Android:** long-press the xlab-yt icon → **Uninstall** (or App info → Uninstall).
+- **iPhone / iPad:** long-press the icon → **Remove App** → **Delete from Home Screen**.
+- **Desktop browser:** open xlab-yt → address-bar app menu → **Uninstall**.
+- Followed channels, Recently played and settings are stored in each browser. To erase them, clear the site data for your xlab-yt address (browser settings → Site settings / Website data).
+
+**YouTube account**
+
+Deleting `cookies.txt` doesn't sign that session out. To revoke it, go to your Google Account → **Security** → **Your devices**, and sign out the session you exported (or just change your password).
+
+---
+
+## Credits
+
+Built on [**YT-DLP Web Player**](https://github.com/Matszwe02/ytdlp_web_player) by [@Matszwe02](https://github.com/Matszwe02), which provides the player, streaming and transcoding engine, and powered by [**yt-dlp**](https://github.com/yt-dlp/yt-dlp) and [**SponsorBlock**](https://sponsor.ajay.app/). Huge thanks to both projects. Go give them a ⭐!
+
+## License
+
+xlab-yt additions © 2026 Ulises Sierra. Because it is built on GPL-2.0 code, the whole project is licensed under the **GNU GPL v2**. See [`LICENSE`](LICENSE).

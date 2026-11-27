@@ -1,0 +1,15 @@
+services:
+  xlab-yt:
+    image: ghcr.io/cjng20u/xlabyt:latest
+    container_name: xlab-yt
+    restart: unless-stopped
+    ports:
+      - "5000:5000"
+    env_file:
+      - .env
+    # Optional: your YouTube account (Home feed, Subscriptions, History, Watch later).
+    # Put cookies.txt next to this file FIRST, then uncomment the two lines below.
+    # volumes:
+    #   - ./cookies.txt:/app/cookies.txt
+    # NVIDIA transcoding: use docker-compose.build.yml with Dockerfile.hwaccel and uncomment:
+    # gpus: all
