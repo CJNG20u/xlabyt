@@ -59,8 +59,8 @@ def api_browse():
 @app.route('/api/prefetch', methods=['GET', 'POST'])
 def api_prefetch():
     url = get_url(request)
-    started = yt_browse.prefetch(url, request.args.get('media', '')) if url else False
-    return jsonify({'started': started}), 202
+    result = yt_browse.prefetch(url, request.args.get('media', '')) if url else False
+    return jsonify({'started': result is True, 'ready': result == 'ready'}), 202
 
 
 @app.route('/api/related')

@@ -148,8 +148,28 @@ def _channel_banner(info: dict) -> str:
     return ''
 
 
+SEARCH_BUCKET = 96  # results per YouTube search call; pages are sliced from it
+
+
+def _search_page(query: str, page: int, cookies: bool = False) -> dict:
+    """ytsearchN always starts from the first result, so fetching page 5 used to re-run pages 1-4.
+    Fetch 96 results at a time (cached) and slice pages out of them."""
+    per_bucket = SEARCH_BUCKET // PAGE_SIZE
+    bucket = (page - 1) // per_bucket + 1
+    n = bucket * SEARCH_BUCKET
+    def build():
+        start = (bucket - 1) * SEARCH_BUCKET + 1
+        info = YTDLP.get_info(f'ytsearch{n}:{query}', _flat_opts(start, n, cookies)) or {}
+        return [e for e in (_simplify(x) for x in (info.get('entries') or [])) if e]
+    items = _cached(f'search|{query}|{bucket}|{cookies}', build)
+    offset = ((page - 1) % per_bucket) * PAGE_SIZE
+    chunk = items[offset:offset + PAGE_SIZE]
+    more = len(chunk) >= PAGE_SIZE or (offset + PAGE_SIZE >= len(items) and len(items) >= SEARCH_BUCKET)
+    return {'title': query, 'channel': '', 'channel_url': '', 'avatar': '', 'banner': '', 'subscribers': None,
+            'items': chunk, 'has_more': more}
+
+
 def _search_source(query: str, page: int) -> str:
-    # ytsearchN returns the first N results; request enough to cover the page we want.
     return f'ytsearch{page * PAGE_SIZE}:{query}'
 
 
@@ -169,8 +189,7 @@ def browse(kind: str, page: int = 1, q: str = '', url: str = '', tab: str = 'vid
     page = max(1, min(page, 20))
     if kind == 'search':
         if not q: return {'items': [], 'has_more': False}
-        data = _fetch(_search_source(q, page), page, cookies=False)
-        return data | {'title': q}
+        return _search_page(q, page)
     if kind == 'home':
         return _fetch(':ytrec', page, cookies=True) | {'title': 'Home'}
     if kind == 'subscriptions':
@@ -181,9 +200,13 @@ def browse(kind: str, page: int = 1, q: str = '', url: str = '', tab: str = 'vid
         return _fetch(':ytwatchlater', page, cookies=True) | {'title': 'Watch later'}
     if kind == 'shorts':
         # Shorts discovery: search results narrowed to shorts (vertical, up to 3 minutes)
-        data = _fetch(_search_source(f'{q} #shorts' if q else '#shorts', page), page, cookies=False)
-        items = [it | {'kind': 'short'} for it in data['items']
-                 if it['kind'] == 'short' or (it['kind'] == 'video' and it.get('duration') and 0 < it['duration'] <= 180 and not it.get('live'))]
+        data = _search_page(f'{q} #shorts' if q else '#shorts', page)
+        # real Shorts only (YouTube links them as /shorts/); regular widescreen videos don't belong in the feed
+        items = [it for it in data['items'] if it['kind'] == 'short']
+        if not items and data['items'] and not any(it['kind'] == 'short' for it in _search_page(f'{q} #shorts' if q else '#shorts', 1)['items']):
+            # this search never returns /shorts/ links: fall back to very short videos
+            items = [it | {'kind': 'short'} for it in data['items']
+                     if it['kind'] == 'video' and it.get('duration') and 0 < it['duration'] <= 60 and not it.get('live')]
         return data | {'items': items, 'title': 'Shorts'}
     if kind == 'channel':
         if tab not in ('videos', 'shorts', 'streams', 'playlists'): tab = 'videos'
@@ -236,7 +259,7 @@ def related(url: str, title: str = '') -> dict:
                 pprint_exc(e)
         if len(items) < 16 and title:
             try:
-                add(_fetch(_search_source(title, 1), 1, cookies=False)['items'])
+                add(_search_page(title, 1)['items'])
             except Exception as e:
                 pprint_exc(e)
         return {'items': items[:30]}
@@ -330,7 +353,7 @@ def comments(url: str, sort: str = 'top') -> dict:
 _prefetching: set[str] = set()
 _prefetch_lock = Lock()
 MAX_PREFETCH = int(os.environ.get('MAX_PREFETCH', '3'))
-MAX_SHORT_PREFETCH = int(os.environ.get('MAX_SHORT_PREFETCH', '3'))
+MAX_SHORT_PREFETCH = int(os.environ.get('MAX_SHORT_PREFETCH', '4'))
 
 
 def prefetch(url: str, media: str = '') -> bool:
@@ -340,15 +363,18 @@ def prefetch(url: str, media: str = '') -> bool:
     from threading import Thread
     if not url: return False
     short = media == 'short'
-    if check_media(url, 'short' if short else 'meta'): return False
+    if check_media(url, 'short' if short else 'meta'): return 'ready'
     key = f'{media}|{url}'
     limit = MAX_SHORT_PREFETCH if short else MAX_PREFETCH
     with _prefetch_lock:
         if key in _prefetching or sum(1 for k in _prefetching if k.startswith(f'{media}|')) >= limit: return False
         _prefetching.add(key)
     def run():
+        started = time.time()
         try:
-            if short: MediaDownloader(url, 'short').run()
+            if short:
+                MediaDownloader(url, 'short').run()
+                print(f'[shorts] ready in {time.time() - started:.1f}s: {url}')
             else: get_meta(url)
         except Exception as e: print(f'[prefetch] {url}: {e}')
         finally:

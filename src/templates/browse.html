@@ -132,7 +132,7 @@
         }
         .short-frame {
             position: relative; height: 100%; aspect-ratio: 9 / 16; max-width: calc(100% - 90px);
-            border-radius: 14px; overflow: hidden; background: #000 center / cover no-repeat;
+            border-radius: 14px; overflow: hidden; background: #111 center / cover no-repeat;
         }
         .short-video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; background: transparent; }
         .short-frame iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; background: #000; }
@@ -350,7 +350,9 @@ function prefetch(url, media = '') {
     const key = media + '|' + url;
     if (!url || prefetched.has(key)) return;
     prefetched.add(key);
-    fetch('/api/prefetch?url=' + encodeURIComponent(url) + (media ? '&media=' + media : ''), {method: 'POST', keepalive: true}).catch(() => {});
+    fetch('/api/prefetch?url=' + encodeURIComponent(url) + (media ? '&media=' + media : ''), {method: 'POST', keepalive: true})
+        .then(r => r.json()).then(d => { if (!d.started && !d.ready) setTimeout(() => prefetched.delete(key), 1500); })  // server busy: ask again later
+        .catch(() => prefetched.delete(key));
 }
 let hoverTimer = null;
 const playUrl = el => { try { return JSON.parse(el.dataset.play).url; } catch { return null; } };
@@ -504,7 +506,11 @@ function shortsView(p) {
         v.playsInline = true; v.setAttribute('webkit-playsinline', ''); v.loop = true; v.preload = 'none';
         v.disablePictureInPicture = true; v.muted = st.muted;
         const slot = {v, idx: -1};
-        v.addEventListener('loadedmetadata', () => { v.style.objectFit = v.videoWidth > v.videoHeight ? 'contain' : 'cover'; });
+        v.addEventListener('loadedmetadata', () => {
+            const wide = v.videoWidth > v.videoHeight;
+            v.style.objectFit = wide ? 'contain' : 'cover';
+            v.style.background = wide ? '#000' : 'transparent';
+        });
         v.addEventListener('playing', () => {
             if (slot.idx !== st.active) { v.pause(); return; }  // warm-up play of an upcoming short
             slideEl(slot.idx)?.classList.add('ready');
@@ -624,15 +630,22 @@ function shortsView(p) {
         st.items.push(...fresh);
         box.insertAdjacentHTML('beforeend', fresh.map((it, k) => slide(it, base + k)).join(''));
         box.querySelectorAll('.short:not([data-obs])').forEach(el => { el.dataset.obs = 1; io.observe(el); });
+        fresh.forEach((it, k) => {
+            if (!it.id || it.id.length !== 11) return;
+            const img = new Image();
+            img.referrerPolicy = 'no-referrer';
+            img.onload = () => { if (img.naturalWidth > 120 && img.naturalHeight > img.naturalWidth) { const f = slideEl(base + k)?.querySelector('.short-frame'); if (f) f.style.backgroundImage = `url('${img.src}')`; } };
+            img.src = `https://i.ytimg.com/vi/${it.id}/oardefault.jpg`;
+        });
         // the server starts downloading the first shorts right away
-        if (base === 0) fresh.slice(0, 3).forEach(it => prefetch(it.url, 'short'));
+        if (base === 0) fresh.slice(0, 4).forEach(it => prefetch(it.url, 'short'));
         return fresh.length;
     }
     function slide(it, i) {
-        const vert = it.id && it.id.length === 11 ? `url('https://i.ytimg.com/vi/${it.id}/oardefault.jpg'), ` : '';
+        const bg = it.thumb ? `url('${esc(it.thumb)}')` : (it.id && it.id.length === 11 ? `url('https://i.ytimg.com/vi/${it.id}/hqdefault.jpg')` : 'none');
         const ch = it.channel_url ? `<a href="${channelHref(it.channel_url)}">${esc(it.channel ? (it.channel.startsWith('@') ? it.channel : '@' + it.channel) : 'Channel')}</a>` : `<b>${esc(it.channel)}</b>`;
         return `<section class="short" data-i="${i}">
-            <div class="short-frame" style="background-image:${vert}url('${esc(it.thumb)}')">
+            <div class="short-frame" style="background-image:${bg}">
                 <div class="short-touch"></div>
                 <div class="spinner short-loading"></div>
                 <div class="short-paused"><i class="fa-solid fa-play"></i></div>
@@ -702,7 +715,7 @@ function shortsView(p) {
         rememberPlay({...it, kind: 'short'});
         const bar = slideEl(i)?.querySelector('.short-progress i'); if (bar) bar.style.width = '0';
         // server: have the current and next three downloaded / downloading
-        for (const k of [i, i + 1, i + 2, i + 3]) if (st.items[k] && !st.items[k]._fallback) prefetch(st.items[k].url, 'short');
+        for (let k = i; k <= i + 5; k++) if (st.items[k] && !st.items[k]._fallback) prefetch(st.items[k].url, 'short');
         if (it._fallback) showFrame(i);
         else { const s = mount(i, 'auto'); if (s) playActive(s); }
         // page: buffer the next two (and keep the previous one) so swiping is instant
