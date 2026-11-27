@@ -280,6 +280,7 @@ class MediaDownloader:
             elif self.media_type.startswith('sub'): self.sub()
             elif self.media_type.startswith('sprite'): self.sprite()
             elif self.media_type.startswith('picture'): self.picture()
+            elif self.media_type.startswith('short'): self.short()
         return check_media(url=self.url, media_type=self.media_type)
 
 
@@ -439,6 +440,29 @@ class MediaDownloader:
                     print(f'Falling back to standard video download due to FFMPEG error')
                     self.ydl_opts.update({"format": f"bestvideo{height_param}+bestaudio/best", "outtmpl": os.path.join(self.data_dir, f'{self.media_type}.%(ext)s')})
                     YTDLP.download(self.url, self.ydl_opts)
+
+
+    def short(self):
+        """Shorts feed: one small MP4 that every phone plays natively (H.264 + AAC, <=720p),
+        downloaded ahead of time so swiping to it is instant. Reuses the resolved meta, so
+        there is no second YouTube lookup."""
+        if self.meta.get('is_live'): raise NotImplementedError('Livestreams are not supported in the Shorts feed')
+        for leftover in os.listdir(self.data_dir):  # partial files from an interrupted download
+            if leftover.startswith('short.') and not leftover.endswith('.temp'):
+                try: os.remove(os.path.join(self.data_dir, leftover))
+                except OSError: pass
+        fmt = ('bv*[height<=720][vcodec^=avc1]+ba[ext=m4a]/'
+               'bv*[height<=720][vcodec^=avc1]+ba/'
+               'b[height<=720][vcodec^=avc1]/'
+               'bv*[height<=720]+ba[ext=m4a]/b[height<=720]/bv*+ba/b')
+        self.ydl_opts.update({
+            'format': fmt,
+            'merge_output_format': 'mp4',
+            'outtmpl': os.path.join(self.data_dir, 'short.%(ext)s'),
+            'postprocessor_args': {'merger': ['-movflags', '+faststart']},
+            'concurrent_fragment_downloads': 4,
+        })
+        YTDLP.download(self.url, self.ydl_opts, 'short')
 
 
     def hls(self):

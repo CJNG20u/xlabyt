@@ -134,6 +134,7 @@
             position: relative; height: 100%; aspect-ratio: 9 / 16; max-width: calc(100% - 90px);
             border-radius: 14px; overflow: hidden; background: #000 center / cover no-repeat;
         }
+        .short-video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; background: transparent; }
         .short-frame iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; background: #000; }
         .short-touch { position: absolute; inset: 0; z-index: 2; cursor: pointer; -webkit-tap-highlight-color: transparent; }
         .short-paused {
@@ -345,10 +346,11 @@ main.addEventListener('click', e => {
 });
 
 const prefetched = new Set();
-function prefetch(url) {
-    if (!url || prefetched.has(url)) return;
-    prefetched.add(url);
-    fetch('/api/prefetch?url=' + encodeURIComponent(url), {method: 'POST', keepalive: true}).catch(() => {});
+function prefetch(url, media = '') {
+    const key = media + '|' + url;
+    if (!url || prefetched.has(key)) return;
+    prefetched.add(key);
+    fetch('/api/prefetch?url=' + encodeURIComponent(url) + (media ? '&media=' + media : ''), {method: 'POST', keepalive: true}).catch(() => {});
 }
 let hoverTimer = null;
 const playUrl = el => { try { return JSON.parse(el.dataset.play).url; } catch { return null; } };
@@ -479,18 +481,135 @@ function homeView() {
 }
 
 /* ---------- shorts viewer ---------- */
+// Native <video> pool: the server downloads each upcoming short as a small MP4 ahead of time
+// (/short-media), and the next ones are already buffered in the page, so swiping is instant.
 const ytId = url => ((url || '').match(/(?:v=|youtu\.be\/|\/shorts\/)([A-Za-z0-9_-]{11})/) || [])[1] || '';
 function shortsView(p) {
     const token = ++routeToken;
     const live = () => token === routeToken;
     const st = {items: [], seen: new Set(), page: 1, loading: false, done: false, active: -1,
-                q: p.get('q') || '', channel: p.get('channel') || '', muted: store.get('xlabyt.shortsMuted', false), timer: null};
+                q: p.get('q') || '', channel: p.get('channel') || '', muted: store.get('xlabyt.shortsMuted', false), unlocked: false};
     main.innerHTML = `<div class="shorts-viewer" id="shorts" tabindex="0"><div class="shorts-empty"><div class="spinner"></div></div></div>
         <div class="shorts-nav"><button id="sh-up" aria-label="Previous"><i class="fa-solid fa-chevron-up"></i></button>
         <button id="sh-down" aria-label="Next"><i class="fa-solid fa-chevron-down"></i></button></div>`;
     const box = $('#shorts');
     document.title = 'Shorts - {{ app_title }}';
+    const mediaUrl = it => '/short-media?url=' + encodeURIComponent(it.url);
+    const slideEl = i => box.querySelector(`.short[data-i="${i}"]`);
 
+    /* ----- video pool ----- */
+    const pool = Array.from({length: 4}, () => {
+        const v = document.createElement('video');
+        v.className = 'short-video';
+        v.playsInline = true; v.setAttribute('webkit-playsinline', ''); v.loop = true; v.preload = 'none';
+        v.disablePictureInPicture = true; v.muted = st.muted;
+        const slot = {v, idx: -1};
+        v.addEventListener('loadedmetadata', () => { v.style.objectFit = v.videoWidth > v.videoHeight ? 'contain' : 'cover'; });
+        v.addEventListener('playing', () => {
+            if (slot.idx !== st.active) { v.pause(); return; }  // warm-up play of an upcoming short
+            slideEl(slot.idx)?.classList.add('ready');
+        });
+        v.addEventListener('canplay', () => { if (slot.idx === st.active) slideEl(slot.idx)?.classList.add('ready'); });
+        v.addEventListener('pause', () => { if (slot.idx === st.active) slideEl(slot.idx)?.classList.add('paused'); });
+        v.addEventListener('play', () => { if (slot.idx === st.active) slideEl(slot.idx)?.classList.remove('paused'); });
+        v.addEventListener('timeupdate', () => {
+            if (slot.idx !== st.active) return;
+            const bar = slideEl(slot.idx)?.querySelector('.short-progress i');
+            if (bar && v.duration) bar.style.width = Math.min(100, v.currentTime / v.duration * 100) + '%';
+        });
+        v.addEventListener('error', () => { if (slot.idx >= 0 && v.getAttribute('src')) fallbackPlayer(slot.idx, slot); });
+        return slot;
+    });
+    function release(slot) {
+        const old = slideEl(slot.idx);
+        if (old) old.classList.remove('ready', 'paused');
+        slot.v.pause();
+        slot.v.removeAttribute('src');
+        try { slot.v.load(); } catch {}
+        slot.v.remove();
+        slot.idx = -1;
+    }
+    function mount(i, preload) {
+        const it = st.items[i], el = slideEl(i);
+        if (!it || !el || it._fallback) return null;
+        let slot = pool.find(s => s.idx === i);
+        if (!slot) {
+            const keep = new Set([st.active, st.active + 1, st.active + 2, st.active - 1]);
+            slot = pool.find(s => s.idx < 0) || pool.filter(s => !keep.has(s.idx)).sort((a, b) => Math.abs(b.idx - st.active) - Math.abs(a.idx - st.active))[0];
+            if (!slot) return null;
+            if (slot.idx >= 0) release(slot);
+            slot.idx = i;
+            slot.v.muted = st.muted;
+            slot.v.preload = preload;
+            slot.v.src = mediaUrl(it);
+            el.querySelector('.short-frame').prepend(slot.v);
+        } else if (preload === 'auto') slot.v.preload = 'auto';
+        return slot;
+    }
+    // iOS only buffers after play(): start upcoming shorts muted and pause them as soon as they play
+    function warm(slot) {
+        if (!slot || slot.idx === st.active || slot.v.readyState >= 3) return;
+        slot.v.muted = true;
+        const r = slot.v.play();
+        if (r && r.catch) r.catch(() => {});
+    }
+    function playActive(slot) {
+        slot.v.muted = st.muted;
+        const r = slot.v.play();
+        if (r && r.catch) r.catch(() => {
+            slot.v.muted = true; updateMute();
+            const r2 = slot.v.play(); if (r2 && r2.catch) r2.catch(() => slideEl(slot.idx)?.classList.add('paused', 'ready'));
+        });
+        updateMute();
+    }
+    const activeSlot = () => pool.find(s => s.idx === st.active && s.idx >= 0);
+
+    /* ----- fallback: full player in an iframe (live streams, anything the MP4 path can't do) ----- */
+    let frameTimer = null;
+    function fallbackPlayer(i, slot) {
+        const it = st.items[i], el = slideEl(i);
+        if (!it || !el) return;
+        it._fallback = true;
+        if (slot) release(slot);
+        if (i === st.active) showFrame(i);
+    }
+    function framePlayer(el) {
+        const f = el && el.querySelector('iframe');
+        try { return f && f.contentWindow.shortsIsReady ? f.contentWindow.shortsPlayer() : null; } catch { return null; }
+    }
+    function showFrame(i) {
+        const el = slideEl(i), it = st.items[i];
+        if (!el || el.querySelector('iframe')) return;
+        const f = document.createElement('iframe');
+        f.src = '/short?url=' + encodeURIComponent(it.url);
+        f.allow = 'autoplay; fullscreen';
+        f.addEventListener('load', () => {
+            const w = f.contentWindow;
+            const start = () => {
+                if (!live() || st.active !== i) return;
+                const pl = w.shortsPlayer(); if (!pl) return;
+                el.classList.add('ready');
+                pl.muted = st.muted;
+                const r = pl.play(); if (r && r.catch) r.catch(() => { pl.muted = true; pl.play(); });
+                clearInterval(frameTimer);
+                frameTimer = setInterval(() => {
+                    if (!live() || st.active !== i) return clearInterval(frameTimer);
+                    const d = parseFloat(pl.duration) || 0;
+                    el.querySelector('.short-progress i').style.width = d ? Math.min(100, pl.currentTime / d * 100) + '%' : '0';
+                    el.classList.toggle('paused', !!pl.paused);
+                }, 250);
+            };
+            if (w.shortsIsReady) start(); else w.addEventListener('shorts-ready', start, {once: true});
+        });
+        el.querySelector('.short-frame').prepend(f);
+    }
+    function current() {  // {play, pause, paused, muted} for whichever player the active short uses
+        const s = activeSlot();
+        if (s) return s.v;
+        return framePlayer(slideEl(st.active));
+    }
+
+    /* ----- feed ----- */
     function add(list) {
         const fresh = [];
         for (const it of list) {
@@ -505,6 +624,8 @@ function shortsView(p) {
         st.items.push(...fresh);
         box.insertAdjacentHTML('beforeend', fresh.map((it, k) => slide(it, base + k)).join(''));
         box.querySelectorAll('.short:not([data-obs])').forEach(el => { el.dataset.obs = 1; io.observe(el); });
+        // the server starts downloading the first shorts right away
+        if (base === 0) fresh.slice(0, 3).forEach(it => prefetch(it.url, 'short'));
         return fresh.length;
     }
     function slide(it, i) {
@@ -525,7 +646,6 @@ function shortsView(p) {
                 ${it.channel_url ? `<a href="${channelHref(it.channel_url)}"><i class="fa-solid fa-user"></i><span>Channel</span></a>` : ''}
             </div></section>`;
     }
-
     async function loadMore() {
         if (st.loading || st.done || !live()) return;
         st.loading = true;
@@ -536,7 +656,6 @@ function shortsView(p) {
                 got = add(d.items || []); st.done = !d.has_more;
             } else {
                 const jobs = [api({kind: 'shorts', q: st.q, page: st.page})];
-                // first page: mix in the newest shorts from channels you follow
                 if (st.page === 1 && !st.q) for (const c of follows().slice(0, 10))
                     jobs.push(api({kind: 'channel', url: c.url, tab: 'shorts'}).then(d => ({items: (d.items || []).slice(0, 5).map(x => ({...x, channel: x.channel || c.name, channel_url: x.channel_url || c.url}))})));
                 const res = await Promise.allSettled(jobs);
@@ -544,8 +663,7 @@ function shortsView(p) {
                 const disc = res[0].status === 'fulfilled' ? res[0].value : {items: [], has_more: false};
                 const followed = res.slice(1).filter(r => r.status === 'fulfilled').flatMap(r => r.value.items);
                 followed.sort(() => Math.random() - .5);
-                const mixed = [];
-                const d = disc.items || [];
+                const mixed = [], d = disc.items || [];
                 for (let i = 0; i < Math.max(d.length, followed.length); i++) { if (followed[i]) mixed.push(followed[i]); if (d[i]) mixed.push(d[i]); }
                 got = add(mixed); st.done = !disc.has_more;
                 if (res[0].status === 'rejected' && !st.items.length) throw res[0].reason;
@@ -559,79 +677,76 @@ function shortsView(p) {
         } finally { st.loading = false; }
     }
 
+    /* ----- activation ----- */
     const io = new IntersectionObserver(es => {
         for (const e of es) if (e.isIntersecting && e.intersectionRatio > .6) activate(+e.target.dataset.i);
     }, {root: box, threshold: [.6]});
-
-    function slideEl(i) { return box.querySelector(`.short[data-i="${i}"]`); }
-    function framePlayer(el) {
-        const f = el && el.querySelector('iframe');
-        try { return f && f.contentWindow.shortsIsReady ? f.contentWindow.shortsPlayer() : null; } catch { return null; }
-    }
-    function updateMute(el, p) {
+    function updateMute() {
+        const el = slideEl(st.active); if (!el) return;
+        const c = current();
+        const m = c ? c.muted : st.muted;
         const btn = el.querySelector('.short-mute');
-        const m = p ? p.muted : st.muted;
         btn.innerHTML = `<i class="fa-solid fa-volume-${m ? 'xmark' : 'high'}"></i>`;
-        btn.classList.toggle('hint', m && !st.muted); // auto-muted by the browser: tap to unmute
+        btn.classList.toggle('hint', m && !st.muted);
     }
     function activate(i) {
         if (i === st.active || !live()) return;
+        const prev = st.active;
         st.active = i;
-        clearInterval(st.timer);
-        box.querySelectorAll('.short').forEach(el => {
-            const j = +el.dataset.i;
-            if (j !== i) { el.querySelector('iframe')?.remove(); el.classList.remove('ready', 'paused'); el.querySelector('.short-progress i').style.width = '0'; }
-        });
-        const el = slideEl(i), it = st.items[i];
-        if (!el || !it) return;
+        clearInterval(frameTimer);
+        // stop everything else; reset the one we left so it starts over next time
+        for (const s of pool) if (s.idx >= 0 && s.idx !== i) { s.v.pause(); if (s.idx === prev && s.v.readyState) s.v.currentTime = 0; }
+        box.querySelectorAll('.short iframe').forEach(f => { if (+f.closest('.short').dataset.i !== i) f.remove(); });
+        box.querySelectorAll('.short.paused').forEach(el => { if (+el.dataset.i !== i) el.classList.remove('paused'); });
+        const it = st.items[i]; if (!it) return;
         rememberPlay({...it, kind: 'short'});
-        const f = document.createElement('iframe');
-        f.src = '/short?url=' + encodeURIComponent(it.url);
-        f.allow = 'autoplay; fullscreen; picture-in-picture';
-        f.addEventListener('load', () => {
-            const w = f.contentWindow;
-            const start = () => {
-                if (!live() || st.active !== i) return;
-                const pl = w.shortsPlayer();
-                if (!pl) return;
-                el.classList.add('ready');
-                pl.muted = st.muted;
-                const r = pl.play();
-                if (r && r.catch) r.catch(() => { pl.muted = true; updateMute(el, pl); const r2 = pl.play(); if (r2 && r2.catch) r2.catch(() => {}); });
-                updateMute(el, pl);
-                st.timer = setInterval(() => {
-                    if (!live()) return clearInterval(st.timer);
-                    const d = parseFloat(pl.duration) || 0;
-                    el.querySelector('.short-progress i').style.width = d ? Math.min(100, pl.currentTime / d * 100) + '%' : '0';
-                    el.classList.toggle('paused', !!pl.paused);
-                }, 200);
-            };
-            if (w.shortsIsReady) start(); else w.addEventListener('shorts-ready', start, {once: true});
-        });
-        el.querySelector('.short-frame').prepend(f);
-        // warm up the next two so they start faster
-        for (const k of [i + 1, i + 2]) if (st.items[k]) prefetch(st.items[k].url);
-        if (i >= st.items.length - 4) loadMore();
+        const bar = slideEl(i)?.querySelector('.short-progress i'); if (bar) bar.style.width = '0';
+        // server: have the current and next three downloaded / downloading
+        for (const k of [i, i + 1, i + 2, i + 3]) if (st.items[k] && !st.items[k]._fallback) prefetch(st.items[k].url, 'short');
+        if (it._fallback) showFrame(i);
+        else { const s = mount(i, 'auto'); if (s) playActive(s); }
+        // page: buffer the next two (and keep the previous one) so swiping is instant
+        setTimeout(() => {
+            if (!live() || st.active !== i) return;
+            warm(mount(i + 1, 'auto'));
+            warm(mount(i + 2, 'auto'));
+            mount(i - 1, 'metadata');
+        }, 150);
+        if (i >= st.items.length - 5) loadMore();
     }
 
+    /* ----- input ----- */
+    // first touch unlocks every pool element on iOS so later shorts may play with sound
+    box.addEventListener('pointerdown', () => {
+        if (st.unlocked) return;
+        st.unlocked = true;
+        for (const s of pool) {
+            if (s.idx < 0 || s.idx === st.active) continue;
+            s.v.muted = true;
+            const r = s.v.play();
+            if (r && r.then) r.then(() => { if (s.idx !== st.active) s.v.pause(); }).catch(() => {});
+        }
+    }, {passive: true});
     box.addEventListener('click', e => {
         const el = e.target.closest('.short');
         if (!el) return;
-        const p = framePlayer(el);
+        const c = current();
         if (e.target.closest('.short-mute')) {
-            st.muted = p ? !p.muted : !st.muted;
+            st.muted = c ? !c.muted : !st.muted;
             store.set('xlabyt.shortsMuted', st.muted);
-            if (p) { p.muted = st.muted; if (p.paused) p.play(); }
-            updateMute(el, p);
+            if (c) { c.muted = st.muted; if (c.paused) c.play(); }
+            updateMute();
         } else if (e.target.closest('.short-touch')) {
-            if (p) p.paused ? p.play() : p.pause();
+            if (!c) return;
+            if (c.muted && !st.muted) { c.muted = false; updateMute(); if (c.paused) c.play(); return; } // first tap after auto-mute: sound on
+            c.paused ? c.play() : c.pause();
         } else if (e.target.closest('.sh-share')) {
             const it = st.items[+el.dataset.i];
             const link = location.origin + watchHref(it.url);
             if (navigator.share) navigator.share({title: it.title, url: link}).catch(() => {});
             else navigator.clipboard.writeText(link).then(() => { e.target.closest('.sh-share').querySelector('span').textContent = 'Copied'; }).catch(() => {});
         } else if (e.target.closest('.sh-open')) {
-            const p2 = framePlayer(el); if (p2) p2.pause();
+            if (c) c.pause();
         }
     });
     const step = dir => box.scrollBy({top: dir * box.clientHeight, behavior: 'smooth'});
@@ -640,16 +755,18 @@ function shortsView(p) {
     const onKey = e => {
         if (!live()) return removeEventListener('keydown', onKey);
         if (e.target.closest('input, textarea, select')) return;
-        const el = slideEl(st.active), p = el && framePlayer(el);
+        const c = current();
         if (e.key === 'ArrowDown' || e.key === 'j') { e.preventDefault(); step(1); }
         else if (e.key === 'ArrowUp' || e.key === 'k') { e.preventDefault(); step(-1); }
-        else if (e.key === ' ' && p) { e.preventDefault(); p.paused ? p.play() : p.pause(); }
-        else if (e.key === 'm' && el) el.querySelector('.short-mute').click();
+        else if (e.key === ' ' && c) { e.preventDefault(); c.paused ? c.play() : c.pause(); }
+        else if (e.key === 'm') slideEl(st.active)?.querySelector('.short-mute').click();
     };
     addEventListener('keydown', onKey);
+    // leaving the page: stop and free every video
+    const onHash = () => { if (!live()) { pool.forEach(s => { if (s.idx >= 0) release(s); }); removeEventListener('hashchange', onHash); } };
+    addEventListener('hashchange', onHash);
     box.focus({preventScroll: true});
 
-    // start with the short that was clicked, if any
     const v = p.get('v');
     if (v) {
         let first = {url: v, title: '', channel: '', thumb: ''};

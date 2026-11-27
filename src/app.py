@@ -59,7 +59,7 @@ def api_browse():
 @app.route('/api/prefetch', methods=['GET', 'POST'])
 def api_prefetch():
     url = get_url(request)
-    started = yt_browse.prefetch(url) if url else False
+    started = yt_browse.prefetch(url, request.args.get('media', '')) if url else False
     return jsonify({'started': started}), 202
 
 
@@ -142,6 +142,17 @@ def iframe():
 
     print('Stopped serving iframe')
     return render_template('iframe.html', app_title=app_title, theme_color=theme_color, video_width=video_width, video_height=video_height)
+
+
+@app.route('/short-media')
+def short_media():
+    try:
+        resp = host_file(get_url(request), 'short')
+        if isinstance(resp, Response) and resp.status_code < 400:
+            resp.headers['Cache-Control'] = 'private, max-age=3600'
+        return resp
+    except Exception as e:
+        return pprint_exc(e)
 
 
 @app.route('/short')

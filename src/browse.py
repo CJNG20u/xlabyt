@@ -330,20 +330,28 @@ def comments(url: str, sort: str = 'top') -> dict:
 _prefetching: set[str] = set()
 _prefetch_lock = Lock()
 MAX_PREFETCH = int(os.environ.get('MAX_PREFETCH', '3'))
+MAX_SHORT_PREFETCH = int(os.environ.get('MAX_SHORT_PREFETCH', '3'))
 
 
-def prefetch(url: str) -> bool:
-    """Start resolving a video in the background (hover / touch / up next), like xlab-player's prefetch."""
-    from addons import check_media, get_meta
+def prefetch(url: str, media: str = '') -> bool:
+    """Start resolving a video in the background (hover / touch / up next), like xlab-player's prefetch.
+    media='short' also downloads the Shorts MP4 so it plays instantly."""
+    from addons import check_media, get_meta, MediaDownloader
     from threading import Thread
-    if not url or check_media(url, 'meta'): return False
+    if not url: return False
+    short = media == 'short'
+    if check_media(url, 'short' if short else 'meta'): return False
+    key = f'{media}|{url}'
+    limit = MAX_SHORT_PREFETCH if short else MAX_PREFETCH
     with _prefetch_lock:
-        if url in _prefetching or len(_prefetching) >= MAX_PREFETCH: return False
-        _prefetching.add(url)
+        if key in _prefetching or sum(1 for k in _prefetching if k.startswith(f'{media}|')) >= limit: return False
+        _prefetching.add(key)
     def run():
-        try: get_meta(url)
+        try:
+            if short: MediaDownloader(url, 'short').run()
+            else: get_meta(url)
         except Exception as e: print(f'[prefetch] {url}: {e}')
         finally:
-            with _prefetch_lock: _prefetching.discard(url)
+            with _prefetch_lock: _prefetching.discard(key)
     Thread(target=run, daemon=True).start()
     return True
