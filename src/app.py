@@ -235,7 +235,7 @@ def serve_playlist():
 def serve_favicon():
     with open(os.path.join(app.static_folder, 'favicon.svg'), 'r') as f:
         favicon = f.read()
-    favicon = favicon.replace('#ff7300', theme_color)
+    favicon = favicon.replace('#fa233b', theme_color)
     return Response(favicon, mimetype='image/svg+xml')
 
 
@@ -246,7 +246,7 @@ def _draw_icon(size: int, maskable: bool = False, transparent: bool = False):
 
     size = max(16, min(size, 1024))
     bg = (0, 0, 0, 0) if transparent else ((0, 0, 0, 255) if amoled_bg else (15, 15, 15, 255))
-    img = draw_logo(size, color=hex_to_rgba(theme_color), bg=bg, scale=0.62 if maskable else (1.0 if transparent else 0.80))
+    img = draw_logo(size, color=hex_to_rgba(theme_color), bg=bg, scale=0.92 if maskable else (1.25 if transparent else 1.0))
     out = BytesIO()
     img.save(out, format='PNG', optimize=True)
     resp = Response(out.getvalue(), mimetype='image/png')

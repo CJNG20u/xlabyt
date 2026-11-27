@@ -79,7 +79,7 @@ with open('package.json', 'w') as f:
 
 
 img = Image.open('../src/static/favicon-template.png').convert('RGBA')
-color = tuple(int("#ff7300"[i:i+2], 16) / 255 for i in (1, 3, 5))
+color = tuple(int("#fa233b"[i:i+2], 16) / 255 for i in (1, 3, 5))
 
 data = img.getdata()
 new_data = []

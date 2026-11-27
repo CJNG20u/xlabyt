@@ -20,7 +20,7 @@ for arg in sys.argv[1:]:
         os.environ[key.upper().lstrip('-').replace('-', '_')] = value
 
 app_title = os.environ.get('APP_TITLE', 'xlab-yt')
-theme_color = os.environ.get('THEME_COLOR', '#ff7300')
+theme_color = os.environ.get('THEME_COLOR', '#fa233b')
 generate_sprite_below = int(os.environ.get('GENERATE_SPRITE_BELOW', '1800'))
 max_video_age = int(os.environ.get('MAX_VIDEO_AGE', '3600'))
 max_video_duration = int(os.environ.get('MAX_VIDEO_DURATION', '36000'))

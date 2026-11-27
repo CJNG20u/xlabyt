@@ -64,7 +64,7 @@ All options are environment variables. Copy `src/example.env` to `.env`, uncomme
 | Variable | Default | |
 |---|---|---|
 | `APP_TITLE` | `xlab-yt` | Name shown in the app and on the home screen |
-| `THEME_COLOR` | `#ff7300` | Accent and logo color |
+| `THEME_COLOR` | `#fa233b` | Accent and logo color |
 | `DEFAULT_QUALITY` / `MAX_QUALITY` | `720` / `2160` | Playback quality |
 | `AUTOSKIP_SB_SEGMENTS` | – | SponsorBlock categories to skip, e.g. `sponsor,selfpromo,intro` |
 | `PROXIES` | `local` | Proxies to try in order, e.g. `local,http://10.0.0.5:8888` |
