@@ -9,10 +9,10 @@ services:
         # gpus: all
         # Mount YouTube cookies to get your real Home feed, Subscriptions, History and Watch later
         # volumes:
-        #     - ./src/cookies.txt:/app/cookies.txt
+        #     - ./cookies.txt:/app/cookies.txt
         restart: unless-stopped
         # env_file:
-        #     - src/.env
+        #     - .env
         ports:
             - 5000:5000
 
