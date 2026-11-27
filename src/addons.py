@@ -24,6 +24,7 @@ from ffmpeg import FFMPEG
 from main import *
 from sb import SponsorBlock
 import fastpath
+fastpath.STATE_FILE = os.path.join(data_path, 'fastpath.json')
 
 
 
@@ -238,6 +239,7 @@ class YTDLP:
             if not fallback:
                 logger.finish()
                 raise
+            fastpath.flag_bot(e)
             if (cookies := get_global_cookies_file(True)):
                 pprint_exc(e)
                 logger.error('An error occured when downloading. Downloading with cookies...')
@@ -875,7 +877,10 @@ def preload(url = None, meta = None, playlist = None):
 
 def mark_watched(url):
     if check_media(url, 'watched'): return
-    if cookies := check_media(url, 'cookies') or get_global_cookies_file():
+    # only when cookies are always on (COOKIES_ONLY_ON_FAILURE=false); never because of the bot-check fallback,
+    # otherwise prefetched / hovered videos would land in the YouTube watch history
+    always_cookies = None if cookies_only_on_failure else get_global_cookies_file(True)
+    if cookies := check_media(url, 'cookies') or always_cookies:
         mark_watched = lambda: YTDLP.get_info(url, ydl_global_opts | {'mark_watched': True, 'cookiefile': cookies})
         Thread(target=mark_watched).start()
         open(os.path.join(get_data_dir(url), 'watched'), 'w').close()
@@ -938,7 +943,8 @@ def get_data_dir(url):
 
 
 def get_global_cookies_file(force = False):
-    if cookies_only_on_failure and not force: return None
+    # after a YouTube bot check, use cookies on the first try instead of failing first (shared, 30 min)
+    if cookies_only_on_failure and not force and not fastpath.bot_flagged(): return None
     if os.path.exists('cookies.txt'): return 'cookies.txt'
     return None
 
