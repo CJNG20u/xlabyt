@@ -190,7 +190,7 @@ def has_cookies() -> bool:
     return bool(get_global_cookies_file(True))
 
 
-def browse(kind: str, page: int = 1, q: str = '', url: str = '', tab: str = 'videos') -> dict:
+def browse(kind: str, page: int = 1, q: str = '', url: str = '', tab: str = 'videos', hints: list | None = None) -> dict:
     page = max(1, min(page, 20))
     if kind == 'search':
         if not q: return {'items': [], 'has_more': False}
@@ -204,23 +204,7 @@ def browse(kind: str, page: int = 1, q: str = '', url: str = '', tab: str = 'vid
     if kind == 'watchlater':
         return _fetch(':ytwatchlater', page, cookies=True) | {'title': 'Watch later'}
     if kind == 'shorts':
-        # Shorts discovery: search results narrowed to shorts (vertical, up to 3 minutes)
-        # 1. YouTube's own Shorts filter: every result is a real Short
-        keep = lambda d: [it | {'kind': 'short'} for it in d['items'] if it['kind'] in ('short', 'video') and not it.get('live')]
-        try:
-            # decided by page 1 (cached), so every page of one feed uses the same source
-            if keep(_search_page(q or '#shorts', 1, sp=SHORTS_FILTER)):
-                data = _search_page(q or '#shorts', page, sp=SHORTS_FILTER)
-                return data | {'items': keep(data), 'title': 'Shorts'}
-        except Exception as e:
-            pprint_exc(e)
-        # 2. fallback: normal search, real Shorts first, otherwise short videos (never an empty feed)
-        data = _search_page(f'{q} #shorts' if q else '#shorts', page)
-        items = [it for it in data['items'] if it['kind'] == 'short']
-        if not items:
-            items = [it | {'kind': 'short'} for it in data['items']
-                     if it['kind'] == 'video' and it.get('duration') and 0 < it['duration'] <= 180 and not it.get('live')]
-        return data | {'items': items, 'title': 'Shorts'}
+        return shorts_feed(page, q, hints)
     if kind == 'channel':
         if tab not in ('videos', 'shorts', 'streams', 'playlists'): tab = 'videos'
         return _fetch(_channel_source(url, tab), page, cookies=False)
@@ -394,3 +378,107 @@ def prefetch(url: str, media: str = '') -> bool:
             with _prefetch_lock: _prefetching.discard(key)
     Thread(target=run, daemon=True).start()
     return True
+
+
+# ---------------------------------------------------------------------------
+# Shorts feed built from the user's own account
+# ---------------------------------------------------------------------------
+SHORTS_CHANNELS_PER_PAGE = 6
+SHORTS_PER_CHANNEL = 3
+
+
+def _shorts_search(query: str, cookies: bool) -> list:
+    """YouTube search with the Shorts filter (one batch, real Shorts only)."""
+    try:
+        data = _search_page(query, 1, cookies=cookies, sp=SHORTS_FILTER)
+        return [it | {'kind': 'short'} for it in data['items'] if it['kind'] in ('short', 'video') and not it.get('live')]
+    except Exception as e:
+        pprint_exc(e)
+        return []
+
+
+def _subscribed_channels() -> list:
+    """Channels the cookies' account is subscribed to (cached 1 h)."""
+    def build():
+        info = YTDLP.get_info('https://www.youtube.com/feed/channels', _flat_opts(1, 500, True), fallback=False) or {}
+        out = []
+        for e in info.get('entries') or []:
+            url = e.get('url') or e.get('channel_url') or ''
+            if '/channel/' in url or '/@' in url:
+                out.append({'url': url, 'name': e.get('title') or e.get('channel') or ''})
+        return out
+    try:
+        return _cached('subs-channels', build, ttl=3600) if has_cookies() else []
+    except Exception as e:
+        pprint_exc(e)
+        return []
+
+
+def _recommended_titles() -> list:
+    """Titles from the account's Home recommendations, used as personal Shorts search terms (cached 30 min)."""
+    def build():
+        info = YTDLP.get_info(':ytrec', _flat_opts(1, 48, True), fallback=False) or {}
+        return [e.get('title') for e in (info.get('entries') or []) if e.get('title')]
+    try:
+        return _cached('rec-titles', build, ttl=1800) if has_cookies() else []
+    except Exception as e:
+        pprint_exc(e)
+        return []
+
+
+def _channel_shorts(channel: dict, depth: int) -> list:
+    try:
+        items = _fetch(_channel_source(channel['url'], 'shorts'), 1, cookies=False)['items']
+    except Exception:
+        return []
+    chunk = items[depth * SHORTS_PER_CHANNEL:(depth + 1) * SHORTS_PER_CHANNEL]
+    return [it | {'kind': 'short', 'channel': it.get('channel') or channel['name'], 'channel_url': it.get('channel_url') or channel['url']} for it in chunk]
+
+
+def _search_term(title: str) -> str:
+    # keep the meaningful words of a title: drop hashtags, brackets and punctuation, max 6 words
+    t = re.sub(r'[#@]\S+|\(.*?\)|\[.*?\]|[|:!?"\'“”‘’]', ' ', title)
+    words = [w for w in t.split() if len(w) > 1][:6]
+    return ' '.join(words)
+
+
+def shorts_feed(page: int, q: str = '', hints: list | None = None) -> dict:
+    """One page of the Shorts feed. With cookies: Shorts from subscribed channels (rotating, deeper each
+    round) plus Shorts searches seeded by the account's own recommendations. Without cookies: searches
+    seeded by the app's followed channels / recently played (hints). A typed query searches just that."""
+    from concurrent.futures import ThreadPoolExecutor
+    cookies = has_cookies()
+    if q:
+        data = _search_page(q, page, cookies=cookies, sp=SHORTS_FILTER)
+        items = [it | {'kind': 'short'} for it in data['items'] if it['kind'] in ('short', 'video')]
+        return {'items': items, 'has_more': data['has_more'] and bool(items), 'title': 'Shorts'}
+
+    jobs, terms = [], []
+    subs = _subscribed_channels()
+    if subs:
+        per = SHORTS_CHANNELS_PER_PAGE
+        rounds = max(1, -(-len(subs) // per))
+        depth, slot = divmod(page - 1, rounds)
+        if depth < 8:
+            batch = subs[slot * per:(slot + 1) * per]
+            jobs += [('channel', c, depth) for c in batch]
+    rec = _recommended_titles()
+    seeds = [t for t in (rec or []) if t] + [h for h in (hints or []) if h]
+    for k in range(2):  # two personal searches per page, different seeds each page
+        if seeds:
+            terms.append(_search_term(seeds[((page - 1) * 2 + k) % len(seeds)]))
+    if not terms and not jobs:
+        terms = ['#shorts']  # nothing personal to go on
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        chan_results = list(pool.map(lambda j: _channel_shorts(j[1], j[2]), jobs))
+        search_results = list(pool.map(lambda t: _shorts_search(t, cookies), [t for t in terms if t]))
+    # interleave: subscription shorts and personal discovery
+    subs_items = [it for lst in chan_results for it in lst]
+    disc_items = [it for lst in search_results for it in lst[:8]]
+    mixed = []
+    for i in range(max(len(subs_items), len(disc_items))):
+        if i < len(subs_items): mixed.append(subs_items[i])
+        if i < len(disc_items): mixed.append(disc_items[i])
+    more_subs = bool(subs) and (page // max(1, -(-len(subs) // SHORTS_CHANNELS_PER_PAGE))) < 8
+    more_seeds = (page * 2) < len(seeds)
+    return {'items': mixed, 'has_more': bool(mixed) and (more_subs or more_seeds), 'title': 'Shorts'}

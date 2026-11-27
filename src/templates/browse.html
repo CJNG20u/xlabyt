@@ -367,7 +367,9 @@ main.addEventListener('pointerdown', e => { const c = e.target.closest('[data-pl
 
 /* ---------- API ---------- */
 async function api(params) {
-    const r = await fetch('/api/browse?' + new URLSearchParams(params));
+    const usp = new URLSearchParams();
+    for (const [k, v] of Object.entries(params)) (Array.isArray(v) ? v : [v]).forEach(x => usp.append(k, x));
+    const r = await fetch('/api/browse?' + usp);
     const data = await r.json().catch(() => ({error: 'Bad response from server'}));
     if (!r.ok) throw Object.assign(new Error(data.error || r.statusText), data);
     return data;
@@ -668,7 +670,8 @@ function shortsView(p) {
                 const d = await api({kind: 'channel', url: st.channel, tab: 'shorts', page: st.page});
                 got = add(d.items || []); st.done = !d.has_more;
             } else {
-                const jobs = [api({kind: 'shorts', q: st.q, page: st.page})];
+                const hints = [...follows().map(c => c.name), ...store.get('xlabyt.recent', []).slice(0, 15).map(r => r.title)].filter(Boolean).slice(0, 20);
+                const jobs = [api({kind: 'shorts', q: st.q, page: st.page, hint: hints})];
                 if (st.page === 1 && !st.q) for (const c of follows().slice(0, 10))
                     jobs.push(api({kind: 'channel', url: c.url, tab: 'shorts'}).then(d => ({items: (d.items || []).slice(0, 5).map(x => ({...x, channel: x.channel || c.name, channel_url: x.channel_url || c.url}))})));
                 const res = await Promise.allSettled(jobs);
@@ -682,7 +685,9 @@ function shortsView(p) {
                 if (res[0].status === 'rejected' && !st.items.length) throw res[0].reason;
             }
             st.page++;
-            if (!st.items.length) box.innerHTML = '<div class="shorts-empty"><div class="empty"><i class="fa-solid fa-clapperboard"></i>No shorts found.</div></div>';
+            st.empty = got ? 0 : (st.empty || 0) + 1;
+            if (st.empty >= 3) st.done = true;  // only repeats coming back
+            if (!st.items.length && st.done) box.innerHTML = '<div class="shorts-empty"><div class="empty"><i class="fa-solid fa-clapperboard"></i>No shorts found.</div></div>';
             else if (!got && !st.done) { st.loading = false; return loadMore(); }
         } catch (e) {
             if (live() && !st.items.length) box.innerHTML = `<div class="shorts-empty"><div class="empty"><i class="fa-solid fa-triangle-exclamation"></i>${esc(e.message)}</div></div>`;
