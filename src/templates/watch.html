@@ -141,6 +141,7 @@
         
         <script src="{{ url_for('static', filename='audio-visualizer.js') }}"></script>
         
+        {% if info %}<script>window.__INFO__ = {{ info|tojson }};</script>{% endif %}
         <script src="{{ url_for('static', filename='script.js') }}"></script>
         <script src="{{ url_for('static', filename='watch-page.js') }}"></script>
         <script src="{{ url_for('static', filename='pwa.js') }}"></script>

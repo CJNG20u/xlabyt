@@ -347,37 +347,80 @@ def comments(url: str, sort: str = 'top') -> dict:
     return _cached(f'comments|{sort}|{url}', build, ttl=1800)
 
 
-_prefetching: set[str] = set()
-_prefetch_lock = Lock()
+from collections import deque
+from threading import Condition, Thread
+
 MAX_PREFETCH = int(os.environ.get('MAX_PREFETCH', '3'))
 MAX_SHORT_PREFETCH = int(os.environ.get('MAX_SHORT_PREFETCH', '4'))
+_QUEUE_LIMIT = {'': 24, 'short': 10}
 
 
-def prefetch(url: str, media: str = '') -> bool:
-    """Start resolving a video in the background (hover / touch / up next), like xlab-player's prefetch.
-    media='short' also downloads the Shorts MP4 so it plays instantly."""
-    from addons import check_media, get_meta, MediaDownloader
-    from threading import Thread
-    if not url: return False
-    short = media == 'short'
-    if check_media(url, 'short' if short else 'meta'): return 'ready'
-    key = f'{media}|{url}'
-    limit = MAX_SHORT_PREFETCH if short else MAX_PREFETCH
-    with _prefetch_lock:
-        if key in _prefetching or sum(1 for k in _prefetching if k.startswith(f'{media}|')) >= limit: return False
-        _prefetching.add(key)
-    def run():
+class _PrefetchQueue:
+    """Background resolving / downloading, like xlab-player's prefetch. Regular videos run newest-first
+    (what's on screen now matters most); Shorts run in feed order. High priority (tap, hover, up next)
+    jumps the queue. Old entries are dropped when the queue is full."""
+    def __init__(self, media: str, workers: int):
+        self.media, self.workers = media, workers
+        self.q, self.keys, self.active = deque(), set(), set()
+        self.cv = Condition()
+        self.started = False
+
+    def _work(self, url: str):
+        from addons import MediaDownloader, get_meta
         started = time.time()
         try:
-            if short:
+            if self.media == 'short':
                 MediaDownloader(url, 'short').run()
                 print(f'[shorts] ready in {time.time() - started:.1f}s: {url}')
-            else: get_meta(url)
-        except Exception as e: print(f'[prefetch] {url}: {e}')
-        finally:
-            with _prefetch_lock: _prefetching.discard(key)
-    Thread(target=run, daemon=True).start()
-    return True
+            else:
+                get_meta(url)
+                print(f'[prefetch] resolved in {time.time() - started:.1f}s: {url}')
+        except Exception as e:
+            print(f'[prefetch] {url}: {e}')
+
+    def _loop(self):
+        while True:
+            with self.cv:
+                while not self.q: self.cv.wait()
+                url = self.q.popleft()
+                self.keys.discard(url); self.active.add(url)
+            try: self._work(url)
+            finally:
+                with self.cv: self.active.discard(url)
+
+    def add(self, url: str, high: bool = False) -> bool:
+        with self.cv:
+            if not self.started:
+                for _ in range(self.workers): Thread(target=self._loop, daemon=True).start()
+                self.started = True
+            if url in self.active: return True
+            if url in self.keys:
+                if high:  # move to the front
+                    self.q.remove(url); self.q.appendleft(url)
+                return True
+            newest_first = self.media != 'short'
+            if high or newest_first: self.q.appendleft(url)
+            else: self.q.append(url)
+            self.keys.add(url)
+            limit = _QUEUE_LIMIT.get(self.media, 24)
+            while len(self.q) > limit:  # drop the stalest
+                old = self.q.pop() if newest_first else self.q.popleft()
+                self.keys.discard(old)
+            self.cv.notify()
+            return True
+
+
+_queues = {'': _PrefetchQueue('', MAX_PREFETCH), 'short': _PrefetchQueue('short', MAX_SHORT_PREFETCH)}
+
+
+def prefetch(url: str, media: str = '', high: bool = False):
+    """Queue a video for background resolving (media='short': also download the Shorts MP4).
+    Returns 'ready' if it is already done, True when queued."""
+    from addons import check_media
+    if not url: return False
+    media = 'short' if media == 'short' else ''
+    if check_media(url, 'short' if media else 'meta'): return 'ready'
+    return _queues[media].add(url, high)
 
 
 # ---------------------------------------------------------------------------

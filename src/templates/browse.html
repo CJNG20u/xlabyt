@@ -346,11 +346,11 @@ main.addEventListener('click', e => {
 });
 
 const prefetched = new Set();
-function prefetch(url, media = '') {
-    const key = media + '|' + url;
+function prefetch(url, media = '', high = false) {
+    const key = media + '|' + url + (high ? '|high' : '');
     if (!url || prefetched.has(key)) return;
     prefetched.add(key);
-    fetch('/api/prefetch?url=' + encodeURIComponent(url) + (media ? '&media=' + media : ''), {method: 'POST', keepalive: true})
+    fetch('/api/prefetch?url=' + encodeURIComponent(url) + (media ? '&media=' + media : '') + (high ? '&prio=high' : ''), {method: 'POST', keepalive: true})
         .then(r => r.json()).then(d => { if (!d.started && !d.ready) setTimeout(() => prefetched.delete(key), 1500); })  // server busy: ask again later
         .catch(() => prefetched.delete(key));
 }
@@ -360,10 +360,24 @@ main.addEventListener('pointerover', e => {
     const c = e.target.closest('[data-play]');
     if (!c || e.pointerType !== 'mouse') return;
     clearTimeout(hoverTimer);
-    hoverTimer = setTimeout(() => prefetch(playUrl(c)), 120);
+    hoverTimer = setTimeout(() => prefetch(playUrl(c), '', true), 120);
 });
 main.addEventListener('pointerout', e => { if (e.target.closest('[data-play]')) clearTimeout(hoverTimer); });
-main.addEventListener('pointerdown', e => { const c = e.target.closest('[data-play]'); if (c) prefetch(playUrl(c)); }, {passive: true});
+main.addEventListener('pointerdown', e => { const c = e.target.closest('[data-play]'); if (c && !c.classList.contains('short')) prefetch(playUrl(c), '', true); }, {passive: true});
+
+// videos that stay on screen get resolved in the background, so tapping them starts instantly
+const seenTimers = new WeakMap();
+const visibleIO = new IntersectionObserver(entries => {
+    for (const e of entries) {
+        const c = e.target;
+        if (e.isIntersecting) {
+            seenTimers.set(c, setTimeout(() => { visibleIO.unobserve(c); prefetch(playUrl(c)); }, 700));
+        } else clearTimeout(seenTimers.get(c));
+    }
+}, {threshold: 0.6});
+new MutationObserver(() => {
+    main.querySelectorAll('.card[data-play]:not(.short):not([data-vis])').forEach(c => { c.dataset.vis = 1; visibleIO.observe(c); });
+}).observe(main, {childList: true, subtree: true});
 
 /* ---------- API ---------- */
 async function api(params) {
@@ -720,7 +734,7 @@ function shortsView(p) {
         rememberPlay({...it, kind: 'short'});
         const bar = slideEl(i)?.querySelector('.short-progress i'); if (bar) bar.style.width = '0';
         // server: have the current and next three downloaded / downloading
-        for (let k = i; k <= i + 5; k++) if (st.items[k] && !st.items[k]._fallback) prefetch(st.items[k].url, 'short');
+        for (let k = i; k <= i + 5; k++) if (st.items[k] && !st.items[k]._fallback) prefetch(st.items[k].url, 'short', k === i);
         if (it._fallback) showFrame(i);
         else { const s = mount(i, 'auto'); if (s) playActive(s); }
         // page: buffer the next two (and keep the previous one) so swiping is instant

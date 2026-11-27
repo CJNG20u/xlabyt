@@ -60,7 +60,7 @@ def api_browse():
 @app.route('/api/prefetch', methods=['GET', 'POST'])
 def api_prefetch():
     url = get_url(request)
-    result = yt_browse.prefetch(url, request.args.get('media', '')) if url else False
+    result = yt_browse.prefetch(url, request.args.get('media', ''), request.args.get('prio') == 'high') if url else False
     return jsonify({'started': result is True, 'ready': result == 'ready'}), 202
 
 
@@ -116,15 +116,18 @@ def watch():
     video_height = 720
     video_title = app_title
 
+    info = None
     if check_media(url, 'meta'):
         meta = get_meta(url)
         video_width = meta.get('width') or video_width
         video_height = meta.get('height') or video_height
         video_title = meta.get('title') or app_title
+        try: info = get_video_info(meta)  # prefetched: the player starts without waiting for /info
+        except Exception as e: pprint_exc(e)
     preload(url)
 
     print('Stopped serving watch')
-    return render_template('watch.html', original_url=url, ydl_version=ydl_version, app_version=app_version, js_runtime_version=js_runtime_version, ffmpeg_version=ffmpeg_version, app_title=app_title, theme_color=theme_color, amoled_bg=amoled_bg, video_width=video_width, video_height=video_height, video_title=video_title)
+    return render_template('watch.html', info=info, original_url=url, ydl_version=ydl_version, app_version=app_version, js_runtime_version=js_runtime_version, ffmpeg_version=ffmpeg_version, app_title=app_title, theme_color=theme_color, amoled_bg=amoled_bg, video_width=video_width, video_height=video_height, video_title=video_title)
 
 
 @app.route('/iframe')

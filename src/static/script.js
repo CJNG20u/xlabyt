@@ -1326,8 +1326,9 @@ async function loadVideo()
             player.currentTime = parseFloat(url.startTime);
         }
     }
-    retryFetch(`/info?url=${url.encodedUrl}`)
-        .then(response => response.json())
+    // the watch page embeds the info when the video was resolved ahead of time (prefetch)
+    const embeddedInfo = window.__INFO__; window.__INFO__ = null;
+    (embeddedInfo ? Promise.resolve(embeddedInfo) : retryFetch(`/info?url=${url.encodedUrl}`).then(response => response.json()))
         .then(rawInfo => {
             info = rawInfo;
             if (info["error"] !== undefined)

@@ -13,10 +13,10 @@
     let related = [];
 
 const prefetched = new Set();
-    function prefetch(url) {
-        if (!url || prefetched.has(url)) return;
-        prefetched.add(url);
-        fetch('/api/prefetch?url=' + encodeURIComponent(url), {method: 'POST', keepalive: true}).catch(() => {});
+    function prefetch(url, high = false) {
+        if (!url || prefetched.has(url + high)) return;
+        prefetched.add(url + high);
+        fetch('/api/prefetch?url=' + encodeURIComponent(url) + (high ? '&prio=high' : ''), {method: 'POST', keepalive: true}).catch(() => {});
     }
     const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c]));
     const store = {
@@ -132,8 +132,8 @@ const prefetched = new Set();
         fetch(`/api/related?url=${enc}&title=${encodeURIComponent(pageTitle)}`).then(r => r.json()).then(d => {
             related = d.items || [];
             relEl.innerHTML = related.length ? related.map(relCard).join('') : '<div class="yt-empty">No recommendations for this video.</div>';
-            // the autoplay pick is resolved while this video plays, so it starts right away
-            if (related[0]) setTimeout(() => prefetch(related[0].url), 3000);
+            // the autoplay pick and the next two are resolved while this video plays, so they start right away
+            setTimeout(() => related.slice(0, 3).forEach((it, k) => prefetch(it.url, k === 0)), 1500);
         }).catch(() => { relEl.innerHTML = '<div class="yt-empty">Could not load recommendations.</div>'; });
     }
     setTimeout(loadRelated, 4000); // don't wait forever on details
@@ -156,10 +156,10 @@ const prefetched = new Set();
         const a = e.target.closest('[data-idx]');
         if (!a || e.pointerType !== 'mouse') return;
         clearTimeout(relHover);
-        relHover = setTimeout(() => prefetch(related[a.dataset.idx]?.url), 120);
+        relHover = setTimeout(() => prefetch(related[a.dataset.idx]?.url, true), 120);
     });
     relEl.addEventListener('pointerout', () => clearTimeout(relHover));
-    relEl.addEventListener('pointerdown', e => { const a = e.target.closest('[data-idx]'); if (a) prefetch(related[a.dataset.idx]?.url); }, {passive: true});
+    relEl.addEventListener('pointerdown', e => { const a = e.target.closest('[data-idx]'); if (a) prefetch(related[a.dataset.idx]?.url, true); }, {passive: true});
     relEl.addEventListener('click', e => {
         const a = e.target.closest('[data-idx]');
         if (a && related[a.dataset.idx]) remember(related[a.dataset.idx]);

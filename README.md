@@ -42,7 +42,7 @@ The YouTube app and website are built around ads, autoplay rabbit holes and feat
 - **Your YouTube Account (optional)**: Mount `cookies.txt` for your real Home recommendations, Subscriptions, History and Watch later.
 - **Player**: Quality switching, livestreams, subtitles, chapters, seek previews, SponsorBlock auto-skip, loop, picture-in-picture, background playback and downloads.
 - **Installable Mobile & Desktop PWA**: Home-screen app for Android, iOS/iPadOS and desktop, with notch-safe layout, a back button in standalone mode, and **Share → xlab-yt** from the YouTube app on Android.
-- **Fast Start Engine**: The xlab-player resolve engine: YouTube links are resolved with the `android_vr` client and a cached `visitor_data` token (no JavaScript challenge solving), with automatic fallback to standard yt-dlp. Videos are also resolved ahead of time when you hover or touch them, for the next Up next video, and for the next Shorts.
+- **Fast Start Engine**: The xlab-player resolve engine: YouTube links are resolved with the `android_vr` client and a cached `visitor_data` token (no JavaScript challenge solving), with automatic fallback to standard yt-dlp. Videos are resolved ahead of time while they're on screen (Home, search, channels, Up next) through a background queue, so tapping one starts playback immediately; taps and hovers jump the queue.
 - **Any yt-dlp Site**: Besides YouTube, paste a link from any site yt-dlp supports and play it in the same player.
 
 ---
