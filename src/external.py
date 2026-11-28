@@ -19,32 +19,19 @@ class External:
 
 
     _reload_lock = threading.Lock()
-    _reload_checked = 0.0
 
 
     @staticmethod
     def yt_dlp():
-        import time
-        with External._reload_lock:
-            # checking the installed version scans site-packages; it ran before every single yt-dlp call.
-            # The updater runs once a day, so checking once a minute is plenty.
-            if 'yt_dlp' in sys.modules and time.monotonic() - External._reload_checked < 60:
-                return sys.modules['yt_dlp']
-            External._reload_checked = time.monotonic()
-            try:
-                importlib.invalidate_caches()
-                if getattr(sys.modules.get('yt_dlp.version'), '__version__', None) != importlib.metadata.version('yt-dlp'):
-                    # plugins (bgutil PO token provider) must be re-imported with the new yt-dlp, or they
-                    # fail with "PoTokenProvider ... already registered" and tokens stop working
-                    for name in [m for m in list(sys.modules) if m in ('yt_dlp', 'yt_dlp_plugins') or m.startswith(('yt_dlp.', 'yt_dlp_plugins.'))]:
-                        sys.modules.pop(name, None)
-            except Exception as e:
-                print(f'Warning: yt-dlp reload check failed: {e}')
-            import yt_dlp
-            try:
-                import yt_dlp.version
-            except:
-                print('Warning: yt-dlp does not support version')
+        """yt-dlp is imported once per process. It used to be re-imported whenever the installed
+        version looked different, which re-ran the PO token plugin and broke it ("PoTokenProvider
+        ... already registered"). The daily update still installs new versions; they're picked up
+        on the next restart (and every new Docker image ships the latest yt-dlp anyway)."""
+        import yt_dlp
+        try:
+            import yt_dlp.version
+        except Exception:
+            print('Warning: yt-dlp does not support version')
         return yt_dlp
 
 

@@ -76,11 +76,31 @@ app_version = External.get_app_version()
 
 
 
+def _installed_ytdlp_version():
+    try:
+        import importlib, importlib.metadata
+        importlib.invalidate_caches()
+        return importlib.metadata.version('yt-dlp')
+    except Exception:
+        return None
+
+
 def ytdlp_download():
+    """Daily yt-dlp update. yt-dlp isn't hot-swapped inside running workers any more (that broke
+    the PO token plugin), so when a new version was installed the server restarts itself during
+    the night (03:00-05:00 server time) and Docker brings it straight back up with it."""
     while True:
-        print(f"Running periodic yt-dlp update")
+        time.sleep(86400)  # the update at startup already ran
+        before = _installed_ytdlp_version()
+        print("Running periodic yt-dlp update")
         External.download_ytdlp()
-        time.sleep(86400) # 24 hours
+        after = _installed_ytdlp_version()
+        if after and after != before:
+            print(f"yt-dlp updated {before} -> {after}; restarting between 03:00 and 05:00 to load it")
+            while not (3 <= time.localtime().tm_hour < 5):
+                time.sleep(600)
+            print("Restarting to load the new yt-dlp")
+            os.kill(os.getpid(), 15)
 
 
 def delete_old_files():
@@ -117,6 +137,10 @@ if __name__ == '__main__':
         if not os.path.isdir(item): os.remove(item)
 
     Thread(target=delete_old_files, daemon=True).start()
+    # update yt-dlp before the workers start, so they all import the new version once
+    if os.environ.get('YTDLP_UPDATE_ON_START', 'true').lower() == 'true':
+        print("Updating yt-dlp before starting")
+        External.download_ytdlp()
     Thread(target=ytdlp_download, daemon=True).start()
 
     def pid_watcher():
