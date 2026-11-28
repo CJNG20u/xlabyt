@@ -685,7 +685,7 @@ function shortsView(p) {
         slideEl(i)?.classList.remove('ready', 'paused');
     }
     function ytFallback(i) {  // embedding disabled etc.: use the server MP4 for this one
-        const it = st.items[i]; if (!it) return;
+        const it = st.items[i]; if (!it || it._ytFail) return;
         it._ytFail = true;
         ytDestroy(i);
         prefetch(it.url, 'short', i === st.active);
@@ -695,15 +695,15 @@ function shortsView(p) {
         const it = st.items[i], el = slideEl(i);
         if (!useYT(it) || !el) return null;
         if (ytPlayers.has(i)) return ytPlayers.get(i);
-        const rec = {player: null, ready: false, adapter: null};
+        const rec = {player: null, ready: false, adapter: null, played: false, wantSound: false};
         rec.adapter = ytAdapter(rec);
         ytPlayers.set(i, rec);
         try { await loadYTApi(); } catch { ytPlayers.delete(i); ytFallback(i); return null; }
         if (!live() || ytPlayers.get(i) !== rec) return null;
         const holder = document.createElement('div');
         el.querySelector('.short-frame').prepend(holder);
-        // before the first tap iOS only allows muted autoplay; the first tap turns sound on
-        const startMuted = st.muted || !st.unlocked;
+        // iOS only lets a player start on its own while muted: always start muted, unmute once playing
+        const startMuted = true;
         rec.player = new YT.Player(holder, {
             host: 'https://www.youtube-nocookie.com',
             videoId: it.id,
@@ -715,14 +715,27 @@ function shortsView(p) {
                 onReady: () => {
                     rec.ready = true;
                     const f = rec.player.getIframe(); f.classList.add('yt-embed'); f.allow = 'autoplay; encrypted-media';
-                    if (st.active === i) { startMuted ? rec.player.mute() : rec.player.unMute(); rec.player.playVideo(); updateMute(); }
+                    if (st.active === i) ytStart(i, rec);
                     else { rec.player.mute(); rec.player.playVideo(); }  // buffer the next one, paused once it starts
                 },
                 onStateChange: e => {
                     const s = e.data;
                     if (s === 1 && st.active !== i) { rec.player.pauseVideo(); rec.player.seekTo(0, true); return; }
                     if (st.active !== i) return;
-                    if (s === 1) el.classList.add('ready');
+                    if (s === 1) {
+                        el.classList.add('ready');
+                        rec.played = true;
+                        if (rec.wantSound) {  // try sound now that it's playing; if iOS stops it, go back to muted
+                            rec.wantSound = false;
+                            rec.player.unMute();
+                            setTimeout(() => {
+                                if (st.active !== i || !rec.ready) return;
+                                if (rec.player.getPlayerState() !== 1) { rec.player.mute(); rec.player.playVideo(); }
+                                updateMute();
+                            }, 500);
+                        }
+                        updateMute();
+                    }
                     el.classList.toggle('paused', s === 2);
                     if (s === 0) { rec.player.seekTo(0, true); rec.player.playVideo(); }  // loop
                 },
@@ -731,18 +744,27 @@ function shortsView(p) {
         });
         return rec;
     }
+    function ytStart(i, rec) {
+        rec.wantSound = st.unlocked && !st.muted;
+        rec.played = false;
+        rec.player.mute();
+        rec.player.seekTo(0, true);
+        rec.player.playVideo();
+        updateMute();
+        // never leave a spinner: if YouTube's player hasn't started in 7 s, use the server copy
+        setTimeout(() => { if (live() && st.active === i && ytPlayers.get(i) === rec && !rec.played) ytFallback(i); }, 7000);
+    }
     function ytActivate(i) {
         // keep only the previous, current and next two players alive
         for (const k of [...ytPlayers.keys()]) if (k < i - 1 || k > i + 2) ytDestroy(k);
         for (const [k, rec] of ytPlayers) if (k !== i && rec.ready) { try { rec.player.pauseVideo(); } catch {} }
         const rec = ytPlayers.get(i);
-        if (rec && rec.ready) {
-            rec.player.seekTo(0, true);
-            (st.muted || !st.unlocked) ? rec.player.mute() : rec.player.unMute();
-            rec.player.playVideo();
-            if ([1].indexOf(rec.player.getPlayerState()) >= 0) slideEl(i)?.classList.add('ready');
-            updateMute();
-        } else ytMount(i, true);
+        if (rec && rec.ready) ytStart(i, rec);
+        else {
+            ytMount(i, true);
+            // the player itself didn't even load (blocked / slow): fall back after 9 s
+            setTimeout(() => { const r = ytPlayers.get(i); if (live() && st.active === i && (!r || !r.played) && !st.items[i]?._ytFail) ytFallback(i); }, 9000);
+        }
         frameTimer = setInterval(() => {
             const r = ytPlayers.get(i);
             if (!live() || st.active !== i || !r || !r.ready) return;
