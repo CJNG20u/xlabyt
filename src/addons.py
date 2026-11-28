@@ -1,4 +1,5 @@
 import copy
+import threading
 import http.cookies
 import json
 import math
@@ -903,9 +904,7 @@ def preload(url = None, meta = None, playlist = None):
         if meta.get('entries'): meta = meta['entries'][0]
         meta.setdefault('timestamp', int(time.time()))
         try:
-            os.makedirs(get_data_dir(url), exist_ok=True)
-            with open(os.path.join(get_data_dir(url), 'meta.json'), 'w') as f:
-                json.dump(meta, f)
+            save_meta(url, meta)
         except:
             pass
 
@@ -1100,24 +1099,55 @@ def check_meta_validity(url: str, meta: dict):
         return False
 
 
+_KEEP_SUB_EXTS = ('vtt', 'srt')
+
+
+def slim_meta(info: dict) -> dict:
+    """yt-dlp's info for one YouTube video can be 5-10 MB, mostly auto-caption URLs (every language x
+    7 formats). Only vtt/srt are ever used, so keep just those; drop the unused heatmap too.
+    Smaller meta.json = faster every time a page or stream reads it."""
+    for key in ('subtitles', 'automatic_captions'):
+        subs = info.get(key)
+        if isinstance(subs, dict):
+            info[key] = {lang: [f for f in fmts if f.get('ext') in _KEEP_SUB_EXTS] or fmts[:1]
+                         for lang, fmts in subs.items() if fmts}
+    info.pop('heatmap', None)
+    return info
+
+
+def save_meta(url: str, info: dict) -> dict:
+    """Write meta.json atomically: readers in other workers used to catch it half-written
+    (JSONDecodeError), decide it was corrupt and throw the whole video cache away."""
+    data_dir = get_data_dir(url)
+    os.makedirs(data_dir, exist_ok=True)
+    path = os.path.join(data_dir, 'meta.json')
+    tmp = f'{path}.{os.getpid()}.{threading.get_ident()}.part'
+    with open(tmp, 'w') as f:
+        json.dump(slim_meta(info), f)
+    os.replace(tmp, path)
+    return info
+
+
+def load_meta_file(path: str) -> dict:
+    with open(path, 'r') as f:
+        return json.load(f)
+
+
 def get_meta(url: str, max_meta_age = None, force = False):
     if force:
         if m := check_media(url, 'meta'):
-            with open(m, 'r') as f:
-                return json.load(f)
+            return load_meta_file(m)
         return None
     with FileCachingLock(url, 'meta') as cache:
         print(cache)
         if cache:
             try:
-                with open(cache, 'r') as f:
-                    meta = json.load(f)
+                meta = load_meta_file(cache)
                 max_meta_age = max(5, max_meta_age if max_meta_age is not None else (60 if meta.get('is_live') else 600))
                 if time.time() - (meta.get('timestamp') or 0) > max_meta_age:
                     if not check_meta_validity(url, meta): raise RuntimeError('Metadata invalid')
                     meta['timestamp'] = int(time.time())
-                    with open(cache, 'w') as f:
-                        json.dump(meta, f)
+                    save_meta(url, meta)
                     print('Metadata still valid')
                 return meta
             except Exception as e:
@@ -1162,8 +1192,7 @@ def get_meta(url: str, max_meta_age = None, force = False):
                 if not info.get('duration') or not info.get('width') or not info.get('height'):
                     try:
                         print('Fetching additional info for meta')
-                        with open(os.path.join(get_data_dir(url), 'meta.json'), 'w') as f:
-                            json.dump(info, f)
+                        save_meta(url, info)
                         raw_srcs = get_all_video_sources(url, info)
                         srcs = choose_sources_for_res(raw_srcs)
                         src = srcs[1] or srcs[0]
@@ -1180,9 +1209,7 @@ def get_meta(url: str, max_meta_age = None, force = False):
                 info['timestamp'] = int(time.time())
                 possible_meta = info
                 if not info.get('_fast_path'): check_meta_validity(url, info)
-                with open(os.path.join(get_data_dir(url), 'meta.json'), 'w') as f:
-                    json.dump(info, f)
-                    return info
+                return save_meta(url, info)
             except Exception as e:
                 if fast_try:
                     fastpath.failure(e, vd)
