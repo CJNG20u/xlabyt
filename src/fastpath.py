@@ -124,7 +124,9 @@ def flag_bot(error) -> bool:
 
 
 def available(url: str) -> bool:
-    if not ENABLED or not youtube_id(url): return False
+    # with the PO token provider, yt-dlp's own client choice + tokens is the fast path; the mweb
+    # experiment took ~50 s on a cold provider and then returned no playable formats
+    if not ENABLED or POT_PROVIDER or not youtube_id(url): return False
     state = _read_state()
     until = float(state.get('disabled_until') or 0)
     if until and time.time() < until: return False
@@ -136,10 +138,6 @@ def available(url: str) -> bool:
 
 def options(proxy: str | None = None) -> tuple[dict, str | None]:
     """yt-dlp options for the fast attempt and the visitor token they use."""
-    if POT_PROVIDER:
-        # YouTube now wants a PO token even for android_vr. With the bgutil provider running, use
-        # yt-dlp's recommended setup: the single mweb client with a provider token (one player call).
-        return {'extractor_args': {'youtube': {'player_client': ['mweb']}}, 'socket_timeout': 6, 'extractor_retries': 0}, None
     vd = visitor_data(proxy)
     args = {'player_client': ['android_vr']}
     if vd:

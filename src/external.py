@@ -34,7 +34,9 @@ class External:
             try:
                 importlib.invalidate_caches()
                 if getattr(sys.modules.get('yt_dlp.version'), '__version__', None) != importlib.metadata.version('yt-dlp'):
-                    for name in [m for m in list(sys.modules) if m == 'yt_dlp' or m.startswith('yt_dlp.')]:
+                    # plugins (bgutil PO token provider) must be re-imported with the new yt-dlp, or they
+                    # fail with "PoTokenProvider ... already registered" and tokens stop working
+                    for name in [m for m in list(sys.modules) if m in ('yt_dlp', 'yt_dlp_plugins') or m.startswith(('yt_dlp.', 'yt_dlp_plugins.'))]:
                         sys.modules.pop(name, None)
             except Exception as e:
                 print(f'Warning: yt-dlp reload check failed: {e}')
