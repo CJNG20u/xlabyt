@@ -232,7 +232,7 @@ def has_cookies() -> bool:
     return bool(get_global_cookies_file(True))
 
 
-def browse(kind: str, page: int = 1, q: str = '', url: str = '', tab: str = 'videos', hints: list | None = None) -> dict:
+def browse(kind: str, page: int = 1, q: str = '', url: str = '', tab: str = 'videos', hints: list | None = None, seed: int | None = None) -> dict:
     page = max(1, min(page, 20))
     if kind == 'search':
         if not q: return {'items': [], 'has_more': False}
@@ -246,7 +246,7 @@ def browse(kind: str, page: int = 1, q: str = '', url: str = '', tab: str = 'vid
     if kind == 'watchlater':
         return _fetch(':ytwatchlater', page, cookies=True) | {'title': 'Watch later'}
     if kind == 'shorts':
-        return shorts_feed(page, q, hints)
+        return shorts_feed(page, q, hints, seed)
     if kind == 'channel':
         if tab not in ('videos', 'shorts', 'streams', 'playlists'): tab = 'videos'
         return _fetch(_channel_source(url, tab), page, cookies=False)
@@ -571,12 +571,13 @@ def _recommended_titles() -> list:
         return []
 
 
-def _channel_shorts(channel: dict, depth: int) -> list:
+def _channel_shorts(channel: dict, depth: int, offset: int = 0) -> list:
     try:
         items = _fetch(_channel_source(channel['url'], 'shorts'), 1, cookies=False)['items']
     except Exception:
         return []
-    chunk = items[depth * SHORTS_PER_CHANNEL:(depth + 1) * SHORTS_PER_CHANNEL]
+    start = (depth * SHORTS_PER_CHANNEL + offset) % max(1, len(items))
+    chunk = items[start:start + SHORTS_PER_CHANNEL]
     return [it | {'kind': 'short', 'channel': it.get('channel') or channel['name'], 'channel_url': it.get('channel_url') or channel['url']} for it in chunk]
 
 
@@ -587,7 +588,7 @@ def _search_term(title: str) -> str:
     return ' '.join(words)
 
 
-def shorts_feed(page: int, q: str = '', hints: list | None = None) -> dict:
+def shorts_feed(page: int, q: str = '', hints: list | None = None, seed: int | None = None) -> dict:
     """One page of the Shorts feed. With cookies: Shorts from subscribed channels (rotating, deeper each
     round) plus Shorts searches seeded by the account's own recommendations. Without cookies: searches
     seeded by the app's followed channels / recently played (hints). A typed query searches just that."""
@@ -598,24 +599,30 @@ def shorts_feed(page: int, q: str = '', hints: list | None = None) -> dict:
         items = [it | {'kind': 'short'} for it in data['items'] if it['kind'] in ('short', 'video')]
         return {'items': items, 'has_more': data['has_more'] and bool(items), 'title': 'Shorts'}
 
+    import random
+    # page 1 used to always be the same channels and the same search seeds, so the feed looked
+    # identical every time. Each visit sends its own seed: same order while you scroll, new next time.
+    rng = random.Random(seed if seed is not None else random.random())
     jobs, terms = [], []
-    subs = _subscribed_channels()
+    subs = _subscribed_channels()[:]
+    rng.shuffle(subs)
     if subs:
         per = SHORTS_CHANNELS_PER_PAGE
         rounds = max(1, -(-len(subs) // per))
         depth, slot = divmod(page - 1, rounds)
         if depth < 8:
             batch = subs[slot * per:(slot + 1) * per]
-            jobs += [('channel', c, depth) for c in batch]
+            jobs += [('channel', c, depth, rng.randrange(0, 9)) for c in batch]
     rec = _recommended_titles()
     seeds = [t for t in (rec or []) if t] + [h for h in (hints or []) if h]
+    rng.shuffle(seeds)
     for k in range(2):  # two personal searches per page, different seeds each page
         if seeds:
             terms.append(_search_term(seeds[((page - 1) * 2 + k) % len(seeds)]))
     if not terms and not jobs:
         terms = ['#shorts']  # nothing personal to go on
     with ThreadPoolExecutor(max_workers=8) as pool:
-        chan_results = list(pool.map(lambda j: _channel_shorts(j[1], j[2]), jobs))
+        chan_results = list(pool.map(lambda j: _channel_shorts(j[1], j[2], j[3]), jobs))
         search_results = list(pool.map(lambda t: _shorts_search(t, cookies), [t for t in terms if t]))
     # interleave: subscription shorts and personal discovery
     subs_items = [it for lst in chan_results for it in lst]

@@ -47,6 +47,7 @@ def api_browse():
             url=(request.args.get('url') or '').strip(),
             tab=request.args.get('tab', 'videos'),
             hints=[h for h in request.args.getlist('hint') if h][:20],
+            seed=request.args.get('seed', type=int),
         )
         return jsonify(data)
     except Exception as e:
