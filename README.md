@@ -10,6 +10,8 @@
 
 Self-hosted YouTube web app & PWA for iOS, Android and PC: a YouTube-style home, search, channels and watch page, with videos streamed through your server by yt-dlp. No ads, SponsorBlock skipping, background playback on your phone, and optional sign-in with your own YouTube account.
 
+<img width="1855" height="883" alt="image" src="https://github.com/user-attachments/assets/f029cc18-1326-428f-848d-aaed1b6fb706" />
+
 
 [![Docker image](https://github.com/CJNG20u/xlabyt/actions/workflows/docker-publish.yml/badge.svg)](https://github.com/CJNG20u/xlabyt/pkgs/container/xlabyt)
 
