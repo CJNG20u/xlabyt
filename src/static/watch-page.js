@@ -196,42 +196,74 @@ const prefetched = new Set();
 
     /* ---------- comments (read-only) ---------- */
     const listEl = $('yt-comment-list');
-    let commentsStarted = false;
+    let commentsStarted = false, commentsReq = 0;
     function setupComments() {
         $('yt-comments').hidden = false;
-        // load once the comments come near the viewport, like YouTube
-        const io = new IntersectionObserver(es => {
-            if (es[0].isIntersecting && !commentsStarted) { commentsStarted = true; io.disconnect(); loadComments('top'); }
-        }, {rootMargin: '400px'});
+        const start = () => { if (!commentsStarted) { commentsStarted = true; io.disconnect(); loadComments('top'); } };
+        // load when the comments come near the viewport, or a few seconds after the video starts anyway
+        const io = new IntersectionObserver(es => { if (es[0].isIntersecting) start(); }, {rootMargin: '800px'});
         io.observe($('yt-comments'));
+        setTimeout(start, 5000);
         $('yt-comment-sort').addEventListener('change', e => loadComments(e.target.value));
     }
+    function clampLongText(root) {
+        root.querySelectorAll('.yt-comment-text.clamp:not([data-checked])').forEach(t => {
+            t.dataset.checked = '1';
+            const clamped = t.clientHeight;
+            t.classList.remove('clamp');
+            const full = t.clientHeight;
+            t.classList.add('clamp');
+            if (full > clamped + 4) {
+                const b = document.createElement('button');
+                b.className = 'yt-more'; b.textContent = 'Read more';
+                b.onclick = () => { const open = t.classList.toggle('clamp'); b.textContent = open ? 'Read more' : 'Show less'; };
+                t.after(b);
+            }
+        });
+    }
     function loadComments(sort) {
+        const req = ++commentsReq;
         listEl.innerHTML = '<div class="yt-loading"><div class="yt-spinner"></div></div>';
+        // 1) the first ~20 comments without replies (fast), 2) then the rest with replies, merged in place
         fetch(`/api/comments?url=${enc}&sort=${sort}`).then(r => r.json()).then(d => {
+            if (req !== commentsReq) return;
             const cs = d.comments || [];
             if (d.count != null) $('yt-comment-count').textContent = Number(d.count).toLocaleString() + ' Comments';
             listEl.innerHTML = cs.length ? cs.map(c => commentHtml(c, false)).join('')
                 : `<div class="yt-empty">${d.error ? 'Could not load comments: ' + esc(d.error) : 'No comments.'}</div>`;
-            listEl.querySelectorAll('.yt-comment-text').forEach(t => {
-                const clamped = t.clientHeight;
-                t.classList.remove('clamp');
-                const full = t.clientHeight;
-                t.classList.add('clamp');
-                if (full > clamped + 4) {
-                    const b = document.createElement('button');
-                    b.className = 'yt-more'; b.textContent = 'Read more';
-                    b.onclick = () => { const open = t.classList.toggle('clamp'); b.textContent = open ? 'Read more' : 'Show less'; };
-                    t.after(b);
+            clampLongText(listEl);
+            if (!d.full && cs.length) loadFullComments(sort, req, cs);
+        }).catch(() => { if (req === commentsReq) listEl.innerHTML = '<div class="yt-empty">Could not load comments.</div>'; });
+    }
+    function loadFullComments(sort, req, shown) {
+        fetch(`/api/comments?url=${enc}&sort=${sort}&full=1`).then(r => r.ok ? r.json() : null).then(d => {
+            if (!d || req !== commentsReq || !(d.comments || []).length) return;
+            const shownIds = new Set(shown.map(c => c.id));
+            const nodes = [...listEl.children];
+            d.comments.forEach(c => {
+                if (shownIds.has(c.id)) {  // already on screen: just add its replies
+                    const node = nodes[shown.findIndex(x => x.id === c.id)];
+                    const body = node && node.querySelector('.yt-comment-body');
+                    if (body && c.replies && c.replies.length && !body.querySelector('.yt-replies')) {
+                        const tmp = document.createElement('div');
+                        tmp.innerHTML = repliesHtml(c);
+                        body.append(...tmp.childNodes);
+                    }
+                } else {
+                    listEl.insertAdjacentHTML('beforeend', commentHtml(c, false));
                 }
             });
-        }).catch(() => { listEl.innerHTML = '<div class="yt-empty">Could not load comments.</div>'; });
+            clampLongText(listEl);
+        }).catch(() => {});
+    }
+    function repliesHtml(c) {
+        return c.replies && c.replies.length ? `
+            <button class="yt-replies-toggle" onclick="const r=this.nextElementSibling; r.hidden=!r.hidden; this.firstChild.className = r.hidden ? 'fa-solid fa-chevron-down' : 'fa-solid fa-chevron-up';"><i class="fa-solid fa-chevron-down"></i> ${c.replies.length} ${c.replies.length === 1 ? 'reply' : 'replies'}</button>
+            <div class="yt-replies" hidden>${c.replies.map(r => commentHtml(r, true)).join('')}</div>` : '';
     }
     function commentHtml(c, isReply) {
         const author = `<span class="${c.is_uploader ? 'owner' : ''}">${esc(c.author)}${c.verified ? ' <i class="fa-solid fa-circle-check" style="font-size:11px"></i>' : ''}</span>`;
-        const replies = c.replies && c.replies.length ? `
-            <button class="yt-replies-toggle" onclick="const r=this.nextElementSibling; r.hidden=!r.hidden; this.firstChild.className = r.hidden ? 'fa-solid fa-chevron-down' : 'fa-solid fa-chevron-up';"><i class="fa-solid fa-chevron-down"></i> ${c.replies.length} ${c.replies.length === 1 ? 'reply' : 'replies'}</button>
-            <div class="yt-replies" hidden>${c.replies.map(r => commentHtml(r, true)).join('')}</div>` : '';
+        const replies = repliesHtml(c);
         return `<div class="yt-comment ${isReply ? 'yt-reply' : ''}">
             <span class="yt-avatar">${avatarHtml(c.avatar, c.author)}</span>
             <div class="yt-comment-body">

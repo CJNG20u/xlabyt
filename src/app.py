@@ -88,7 +88,7 @@ def api_comments():
     try:
         url = get_url(request)
         if not url: return jsonify({'error': 'URL parameter is required'}), 400
-        return jsonify(yt_browse.comments(url, request.args.get('sort', 'top')))
+        return jsonify(yt_browse.comments(url, request.args.get('sort', 'top'), request.args.get('full') == '1'))
     except Exception as e:
         pprint_exc(e)
         return jsonify({'comments': [], 'error': str(e).splitlines()[0][:300] if str(e) else 'Failed'}), 500
@@ -125,6 +125,7 @@ def watch():
         try: info = get_video_info(meta)  # prefetched: the player starts without waiting for /info
         except Exception as e: pprint_exc(e)
     preload(url)
+    yt_browse.warm_comments(url)
 
     print('Stopped serving watch')
     return render_template('watch.html', info=info, original_url=url, ydl_version=ydl_version, app_version=app_version, js_runtime_version=js_runtime_version, ffmpeg_version=ffmpeg_version, app_title=app_title, theme_color=theme_color, amoled_bg=amoled_bg, video_width=video_width, video_height=video_height, video_title=video_title)

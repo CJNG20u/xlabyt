@@ -2,7 +2,7 @@
 // - pages: network first (so updates show immediately), cached copy / offline page when offline
 // - static assets, icons, player library: stale-while-revalidate
 // - API, video streams, downloads: never touched
-const VERSION = 'xlab-yt-v10';
+const VERSION = 'xlab-yt-v11';
 const STATIC_CACHE = VERSION + '-static';
 const PAGE_CACHE = VERSION + '-pages';
 const PRECACHE = ['/', '/static/fontawesome/css/all.min.css', '/static/style.css', '/static/watch-page.css',

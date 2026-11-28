@@ -17,6 +17,7 @@ CACHE_TTL = int(os.environ.get('BROWSE_CACHE_TTL', '600'))
 
 _cache: dict[str, tuple[float, list]] = {}
 _cache_lock = Lock()
+_inflight: dict[str, Lock] = {}
 
 # The server runs 4 worker processes and each had its own in-memory cache, so going back to a page
 # usually landed on a worker that had never seen it and re-ran yt-dlp. Results are also kept on disk
@@ -275,11 +276,19 @@ def _cached(key: str, fn, ttl: int = CACHE_TTL):
     if (disk := _disk_get(key, ttl)) is not None:
         with _cache_lock: _cache[key] = (now, disk)
         return disk
-    value = fn()
-    _disk_put(key, value)
-    with _cache_lock:
-        _cache[key] = (now, value)
-    return value
+    with _cache_lock:  # same thing already loading in this process (e.g. a warm-up): wait for it instead
+        lock = _inflight.setdefault(key, Lock())
+    with lock:
+        with _cache_lock:
+            hit = _cache.get(key)
+        if hit and time.time() - hit[0] < ttl: return hit[1]
+        try:
+            value = fn()
+            _disk_put(key, value)
+            with _cache_lock: _cache[key] = (time.time(), value)
+            return value
+        finally:
+            with _cache_lock: _inflight.pop(key, None)
 
 
 def related(url: str, title: str = '') -> dict:
@@ -352,22 +361,39 @@ def details(meta: dict) -> dict:
     }
 
 
-def comments(url: str, sort: str = 'top') -> dict:
+# (max total, max top-level threads, max replies total, max replies per thread)
+_COMMENT_LIMITS = {
+    'quick': ['25', '20', '0', '0'],     # first screen: one or two requests, no reply threads
+    'full': ['150', '50', '100', '5'],   # every thread with replies costs YouTube an extra request each
+}
+
+
+def comments(url: str, sort: str = 'top', full: bool = False) -> dict:
     sort = 'new' if sort == 'new' else 'top'
+    depth = 'full' if full else 'quick'
+    if not full:  # a finished full load already has everything the quick one would
+        with _cache_lock:
+            hit = _cache.get(f'comments|full|{sort}|{url}')
+        if hit and time.time() - hit[0] < 1800: return hit[1]
 
     def build():
         opts = {
             'quiet': True,
             'skip_download': True,
             'getcomments': True,
-            # max total, max top-level threads, max replies total, max replies per thread
-            'extractor_args': {'youtube': {'max_comments': ['150', '50', '100', '5'], 'comment_sort': [sort]}},
+            'extractor_retries': 0,
+            'socket_timeout': 8,
         }
         opts.update(ydl_global_opts)
+        # comments come from the watch page itself; the android_vr client skips downloading and
+        # solving YouTube's player JavaScript, which used to be most of the wait
+        opts['extractor_args'] = {'youtube': {'max_comments': _COMMENT_LIMITS[depth], 'comment_sort': [sort],
+                                              'player_client': ['android_vr']}}
         info = YTDLP.get_info(url, opts) or {}
         threads, by_id = [], {}
         for c in info.get('comments') or []:
             item = {
+                'id': c.get('id'),
                 'author': c.get('author') or '',
                 'avatar': c.get('author_thumbnail') or '',
                 'author_url': c.get('author_url') or '',
@@ -379,6 +405,7 @@ def comments(url: str, sort: str = 'top') -> dict:
                 'hearted': bool(c.get('is_favorited')),
                 'is_uploader': bool(c.get('author_is_uploader')),
                 'verified': bool(c.get('author_is_verified')),
+                'reply_count': c.get('reply_count'),
                 'replies': [],
             }
             parent = c.get('parent') or 'root'
@@ -387,9 +414,19 @@ def comments(url: str, sort: str = 'top') -> dict:
                 threads.append(item)
             elif parent in by_id:
                 by_id[parent]['replies'].append(item)
-        return {'count': info.get('comment_count'), 'comments': threads}
+        return {'count': info.get('comment_count'), 'comments': threads, 'full': full}
 
-    return _cached(f'comments|{sort}|{url}', build, ttl=1800)
+    return _cached(f'comments|{depth}|{sort}|{url}', build, ttl=1800)
+
+
+def warm_comments(url: str, delay: float = 4):
+    """Start loading the first comments in the background when a watch page opens, after the
+    video has had a head start, so they're usually ready by the time you scroll down."""
+    def run():
+        time.sleep(delay)
+        try: comments(url, 'top')
+        except Exception as e: print(f'[comments] warm-up failed: {str(e)[:200]}')
+    if youtube_id(url): Thread(target=run, daemon=True).start()
 
 
 from collections import deque
