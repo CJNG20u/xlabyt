@@ -17,4 +17,5 @@ dist
 build
 *.spec
 *.log
-.vscodeaccounts/
+.vscode
+**/accounts/
