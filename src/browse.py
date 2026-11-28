@@ -295,6 +295,15 @@ def related(url: str, title: str = '') -> dict:
     """YouTube's own "Up next" isn't exposed by yt-dlp, so use the video's auto-generated
     mix (the same source YouTube autoplay draws from), topped up with a title search."""
     vid = youtube_id(url)
+    # before the video's details arrive the page only knows the app name; searching for that
+    # filled "Up next" with videos about xlab. Use the real title from the resolved meta instead.
+    if not title or title.strip().lower() == app_title.strip().lower():
+        title = ''
+        try:
+            from addons import get_meta
+            title = (get_meta(url, force=True) or {}).get('title') or ''
+        except Exception:
+            pass
 
     def build():
         items, seen = [], {vid}
@@ -313,9 +322,13 @@ def related(url: str, title: str = '') -> dict:
                 add(_search_page(title, 1)['items'])
             except Exception as e:
                 pprint_exc(e)
+        if not items: raise RuntimeError('no recommendations found')  # don't cache an empty list
         return {'items': items[:30]}
 
-    return _cached(f'related|{vid or url}', build)
+    try:
+        return _cached(f'related2|{vid or url}', build)
+    except RuntimeError:
+        return {'items': []}
 
 
 def _page_details(url: str) -> dict:

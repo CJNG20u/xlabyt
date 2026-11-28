@@ -68,7 +68,7 @@
                 </div>
             </div>
 
-            <div class="yt-meta" id="yt-meta" data-url="{{ original_url }}" data-title="{{ video_title }}">
+            <div class="yt-meta" id="yt-meta" data-url="{{ original_url }}" data-title="{{ video_title if video_title != app_title else '' }}">
                 <h1 class="yt-title">{{ video_title if video_title != app_title else '' }}</h1>
                 <div class="yt-owner">
                     <a class="yt-chan" id="yt-chan" href="#">
