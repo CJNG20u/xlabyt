@@ -47,6 +47,9 @@ impersonate_browser = os.environ.get('IMPERSONATE_BROWSER', 'chrome')
 port = int(os.environ.get('PORT', '5000'))
 publish_with_cloudflare = (os.environ.get('PUBLISH_WITH_CLOUDFLARE', 'False')).lower() == 'true'
 linked_pid = int(os.environ.get('LINKED_PID', '0'))
+# bgutil PO token provider (separate container), e.g. http://bgutil-provider:4416. Lets YouTube's
+# mweb client stream without bot checks; empty = off
+pot_provider_url = (os.environ.get('POT_PROVIDER_URL') or '').strip().rstrip('/')
 
 deprecated_env = ['DOWNLOAD_PATH', 'PROXY']
 

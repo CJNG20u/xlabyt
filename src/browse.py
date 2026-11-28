@@ -323,6 +323,7 @@ def _page_details(url: str) -> dict:
     Fetch them separately (android_vr, no JS challenges) without holding up playback."""
     def build():
         opts = {'quiet': True, 'skip_download': True, 'extractor_retries': 0, 'socket_timeout': 6,
+                'ignore_no_formats_error': True,
                 'extractor_args': {'youtube': {'player_client': ['android_vr']}}}
         opts.update({k: v for k, v in ydl_global_opts.items() if k not in ('extractor_args',)})
         info = YTDLP.get_info(url, opts, fallback=False) or {}
@@ -383,6 +384,7 @@ def comments(url: str, sort: str = 'top', full: bool = False) -> dict:
             'getcomments': True,
             'extractor_retries': 0,
             'socket_timeout': 8,
+            'ignore_no_formats_error': True,  # we only want the comments, not playable formats
         }
         opts.update(ydl_global_opts)
         # comments come from the watch page itself; the android_vr client skips downloading and

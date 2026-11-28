@@ -2,6 +2,7 @@ dotenv
 Flask
 requests
 yt-dlp[curl-cffi]
+bgutil-ytdlp-pot-provider
 pillow
 psutil
 uvicorn

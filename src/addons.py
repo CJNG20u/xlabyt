@@ -166,6 +166,10 @@ class YTDLP:
     @staticmethod
     def ydl(opts: dict):
         yt_dlp = External.yt_dlp()
+        if pot_provider_url:  # every yt-dlp call can get PO tokens from the bgutil container
+            ea = dict(opts.get('extractor_args') or {})
+            ea.setdefault('youtubepot-bgutilhttp', {'base_url': [pot_provider_url]})
+            opts = opts | {'extractor_args': ea}
         if imp_str := opts.get('impersonate'):
             try:
                 target = yt_dlp.networking.impersonate.ImpersonateTarget.from_str(imp_str)

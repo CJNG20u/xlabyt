@@ -19,6 +19,7 @@ from threading import Lock
 import requests
 
 ENABLED = os.environ.get('FAST_PATH', 'true').lower() == 'true'
+POT_PROVIDER = bool((os.environ.get('POT_PROVIDER_URL') or '').strip())
 VISITOR_DATA_URL = 'https://www.youtube.com/sw.js_data'
 VISITOR_DATA_TTL = 3600
 VISITOR_DATA_COOLDOWN = 60
@@ -135,6 +136,10 @@ def available(url: str) -> bool:
 
 def options(proxy: str | None = None) -> tuple[dict, str | None]:
     """yt-dlp options for the fast attempt and the visitor token they use."""
+    if POT_PROVIDER:
+        # YouTube now wants a PO token even for android_vr. With the bgutil provider running, use
+        # yt-dlp's recommended setup: the single mweb client with a provider token (one player call).
+        return {'extractor_args': {'youtube': {'player_client': ['mweb']}}, 'socket_timeout': 6, 'extractor_retries': 0}, None
     vd = visitor_data(proxy)
     args = {'player_client': ['android_vr']}
     if vd:

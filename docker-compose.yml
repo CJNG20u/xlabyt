@@ -7,6 +7,11 @@ services:
       - "5000:5000"
     env_file:
       - .env
+    environment:
+      # PO tokens from the bgutil container below (fast, fewer "confirm you're not a bot" checks)
+      - POT_PROVIDER_URL=http://bgutil-provider:4416
+    depends_on:
+      - bgutil-provider
     # Fast public DNS for YouTube lookups (Cloudflare, then Google). Remove these lines
     # if you rely on a local DNS server (Pi-hole, AdGuard) or local hostnames in PROXIES.
     dns:
@@ -18,3 +23,11 @@ services:
     #   - ./cookies.txt:/app/cookies.txt
     # NVIDIA transcoding: use docker-compose.build.yml with Dockerfile.hwaccel and uncomment:
     # gpus: all
+
+  bgutil-provider:
+    image: brainicism/bgutil-ytdlp-pot-provider:latest
+    container_name: bgutil-provider
+    restart: unless-stopped
+    dns:
+      - 1.1.1.1
+      - 8.8.8.8
