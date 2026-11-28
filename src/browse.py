@@ -141,14 +141,14 @@ def _simplify(entry: dict) -> dict | None:
     }
 
 
-def _fetch(source: str, page: int, cookies: bool) -> dict:
+def _fetch(source: str, page: int, cookies: bool, ttl: int = CACHE_TTL) -> dict:
     key = f'{source}|{page}|{cookies}'
     now = time.time()
     with _cache_lock:
         hit = _cache.get(key)
-        if hit and now - hit[0] < CACHE_TTL:
+        if hit and now - hit[0] < ttl:
             return hit[1]
-    if (disk := _disk_get(key, CACHE_TTL)) is not None:
+    if (disk := _disk_get(key, ttl)) is not None:
         with _cache_lock: _cache[key] = (now, disk)
         return disk
 
@@ -238,7 +238,7 @@ def browse(kind: str, page: int = 1, q: str = '', url: str = '', tab: str = 'vid
         if not q: return {'items': [], 'has_more': False}
         return _search_page(q, page)
     if kind == 'home':
-        return _fetch(':ytrec', page, cookies=True) | {'title': 'Home'}
+        return home_feed(page, seed, hints)
     if kind == 'subscriptions':
         return _fetch(':ytsubs', page, cookies=True) | {'title': 'Subscriptions'}
     if kind == 'history':
@@ -523,6 +523,55 @@ def prefetch(url: str, media: str = '', high: bool = False):
     if check_media(url, 'short' if media else 'meta'): return 'ready'
     if not high and not PREFETCH_VISIBLE and not media: return False
     return _queues[media].add(url, high)
+
+
+# ---------------------------------------------------------------------------
+# Home feed: YouTube recommendations mixed with subscriptions and "because you watched"
+# ---------------------------------------------------------------------------
+HOME_REC_TTL = 180  # YouTube's recommendations change between loads; don't hold them for 10 min
+
+
+def home_feed(page: int, seed: int | None = None, recent: list | None = None) -> dict:
+    """YouTube's home feed alone came back nearly identical on every visit (the app doesn't add
+    to your watch history, so YouTube had nothing new to go on, and it was cached for 10 min).
+    Each page now mixes: that page of recommendations, a slice of the subscriptions feed, and the
+    "up next" mix of two videos you played recently, shuffled with a per-visit seed."""
+    import random
+    from concurrent.futures import ThreadPoolExecutor
+    rng = random.Random(f'{seed if seed is not None else random.random()}|{page}')
+    recent_urls = [u for u in (recent or []) if youtube_id(u)]
+    picks = rng.sample(recent_urls, min(2, len(recent_urls))) if recent_urls else []
+
+    def subs():
+        try:
+            items = _fetch(':ytsubs', page, cookies=True)['items']
+            return rng.sample(items, min(8, len(items)))
+        except Exception as e:
+            print(f'[home] subscriptions: {str(e)[:150]}')
+            return []
+
+    def because(url):
+        try:
+            items = related(url)['items']
+            return rng.sample(items, min(6, len(items)))
+        except Exception:
+            return []
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        rec_job = pool.submit(_fetch, ':ytrec', page, True, HOME_REC_TTL)
+        subs_job = pool.submit(subs)
+        because_jobs = [pool.submit(because, u) for u in picks]
+        rec = rec_job.result()
+        extra = subs_job.result() + [it for j in because_jobs for it in j.result()]
+
+    items, seen = [], set(youtube_id(u) for u in recent_urls[:30])  # skip what you just watched
+    for it in (rec.get('items') or []) + extra:
+        key = it.get('id') or it.get('url')
+        if it.get('kind') not in ('video', 'short') or key in seen: continue
+        seen.add(key)
+        items.append(it)
+    rng.shuffle(items)
+    return {'title': 'Home', 'items': items, 'has_more': bool(rec.get('has_more')) or page < 4}
 
 
 # ---------------------------------------------------------------------------

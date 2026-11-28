@@ -400,8 +400,9 @@ async function api(params) {
 
 /* ---------- infinite feed ---------- */
 let routeToken = 0;
-function feed(params, {gridClass = '', header = '', emptyMsg = 'Nothing here.', onFirst, mapItem = x => x} = {}) {
+function feed(params, {gridClass = '', header = '', emptyMsg = 'Nothing here.', onFirst, mapItem = x => x, dedupe = false} = {}) {
     const token = ++routeToken;
+    const shown = new Set();  // with dedupe: a video already on the page isn't added again by later pages
     main.innerHTML = `${header}<div class="grid ${gridClass}" id="grid">${skeletons()}</div><div class="loader" id="more"></div>`;
     const grid = $('#grid'), more = $('#more');
     let page = 1, loading = false, done = false, first = true;
@@ -414,7 +415,9 @@ function feed(params, {gridClass = '', header = '', emptyMsg = 'Nothing here.', 
             const data = await api({...params, page});
             if (token !== routeToken) return;
             if (first) { grid.innerHTML = ''; onFirst?.(data); }
-            grid.insertAdjacentHTML('beforeend', (data.items || []).map(mapItem).map(card).join(''));
+            let items = data.items || [];
+            if (dedupe) items = items.filter(it => { const k = it.id || it.url; if (shown.has(k)) return false; shown.add(k); return true; });
+            grid.insertAdjacentHTML('beforeend', items.map(mapItem).map(card).join(''));
             if (first && !(data.items || []).length) grid.outerHTML = `<div class="empty"><i class="fa-regular fa-face-meh"></i>${emptyMsg}</div>`;
             first = false; page++;
             done = !data.has_more;
@@ -494,7 +497,10 @@ function recentView() {
 
 function homeView() {
     if (HAS_COOKIES) {
-        feed({kind: 'home'}, {emptyMsg: 'YouTube returned no recommendations. Try Subscriptions or search.'});
+        // new seed every visit = different mix; recent plays seed "because you watched"
+        const recent = store.get('xlabyt.recent', []).filter(r => r.kind !== 'short').slice(0, 20).map(r => r.url);
+        feed({kind: 'home', seed: Math.floor(Math.random() * 1e9), hint: recent},
+             {emptyMsg: 'YouTube returned no recommendations. Try Subscriptions or search.', dedupe: true});
     } else if (follows().length) {
         followingFeed('Latest from channels you follow');
     } else {
