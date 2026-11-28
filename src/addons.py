@@ -35,11 +35,15 @@ class FileCachingLock:
         self.data_dir = get_data_dir(url)
 
     def __enter__(self):
-        for _ in range(600):
-            if not os.path.exists(os.path.join(self.data_dir, f'{self.media_type}.temp')):
-                break
-            time.sleep(1)
-            print(f'Waiting for download of {self.media_type} for {self.data_dir.split("/")[-1]}')
+        # another request / worker is already fetching this: poll quickly so we pick it up the moment it lands
+        lock_file = os.path.join(self.data_dir, f'{self.media_type}.temp')
+        waited = 0.0
+        while waited < 600 and os.path.exists(lock_file):
+            delay = 0.05 if waited < 2 else (0.2 if waited < 10 else 1)
+            time.sleep(delay)
+            waited += delay
+            if int(waited) != int(waited - delay):
+                print(f'Waiting for download of {self.media_type} for {self.data_dir.split("/")[-1]}')
         
         if cached_media := check_media(url=self.url, media_type=self.media_type):
             print(f'Cache hit for {self.media_type}!')
@@ -66,7 +70,7 @@ class Processes:
         proc = {}
         try:
             for i in os.listdir(data_path):
-                if not os.path.isdir(os.path.join(data_path, i)):
+                if i.isdigit() and not os.path.isdir(os.path.join(data_path, i)):  # pid files only (not fastpath.json)
                     with open(os.path.join(data_path, i), 'r') as f:
                         proc[str(i)] = json.load(f)
         except: pass
@@ -742,6 +746,21 @@ def _check_public_host(hostname: str):
     _safe_hosts[hostname] = now + 300
 
 
+UPSTREAM_CHUNK = int(float(os.environ.get('STREAM_CHUNK_MB', '10')) * 1024 * 1024)
+_OPEN_RANGE = re.compile(r'^bytes=(\d+)-$')
+
+
+def _cap_range(src: str, range_header: str) -> str:
+    """YouTube throttles big open-ended downloads to about playback speed. Ask googlevideo for at most
+    STREAM_CHUNK_MB at a time (like yt-dlp's http_chunk_size); the browser gets a normal 206 and just
+    asks for the next piece, so buffering and quality switches stay fast."""
+    if UPSTREAM_CHUNK <= 0 or 'googlevideo.com' not in (urlparse(src).hostname or ''): return range_header
+    if m := _OPEN_RANGE.match(range_header.strip()):
+        start = int(m.group(1))
+        return f'bytes={start}-{start + UPSTREAM_CHUNK - 1}'
+    return range_header
+
+
 def fetch_safe(url: str, **kwargs) -> requests.Response:
     """prevents requesting from local network"""
     for _ in range(5):
@@ -797,7 +816,7 @@ def stream_media_file(url: str, src: str, fmt_id: str|None = None, headers_range
         headers_dict = dict(headers) if headers else {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
         }
-        if headers_range: headers_dict['Range'] = headers_range
+        if headers_range: headers_dict['Range'] = _cap_range(src, headers_range)
         url = url or ""
         response = fetch_safe(src, stream=True, headers=headers_dict, cookies=load_http_cookies(cookies), proxies=get_proxy(url, True))
         response.raise_for_status()
@@ -840,8 +859,11 @@ def stream_media_file(url: str, src: str, fmt_id: str|None = None, headers_range
             return resp
 
         def generate():
-            if content: yield content
-            yield from chunks
+            try:
+                if content: yield content
+                yield from chunks
+            finally:
+                response.close()
 
         resp = Response(generate(), status=response.status_code, mimetype=mime_type)
         resp.headers['Content-Security-Policy'] = 'sandbox'
@@ -1051,8 +1073,13 @@ def check_meta_validity(url: str, meta: dict):
         query = parse_qs(urlparse(src[0]).query)
         source = (query.get('src') or [None])[0]
         fmt_id = (query.get('fmt_id') or [None])[0]
-        resp = stream_media_file(url, source, fmt_id, meta=meta)
+        fmt = next((f for f in (meta.get('formats') or []) if f.get('format_id') == fmt_id), {})
+        # probe with a tiny range: a plain GET made googlevideo start sending the whole file, which then
+        # competed with the player's own first request
+        probe_range = None if 'm3u8' in (fmt.get('protocol') or '') else 'bytes=0-1023'
+        resp = stream_media_file(url, source, fmt_id, headers_range=probe_range, meta=meta)
         if isinstance(resp, Response):
+            resp.close()
             if resp.status_code > 399: raise ConnectionError(resp.response)
 
             mime_type = resp.headers.get('Content-Type') or ''
@@ -1063,6 +1090,7 @@ def check_meta_validity(url: str, meta: dict):
                     line_str = line.strip()
                     if not line_str or line_str.startswith('#'): continue
                     resp = stream_media_file(url, (parse_qs(urlparse(line_str).query).get('src') or [None])[0], fmt_id, meta=meta)
+                    if isinstance(resp, Response): resp.close()
                     if not isinstance(resp, Response) or resp.status_code > 399: raise ConnectionError('Can not send a HLS request')
                     break
         else: raise ConnectionError('Can not send a request')

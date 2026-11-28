@@ -18,6 +18,43 @@ CACHE_TTL = int(os.environ.get('BROWSE_CACHE_TTL', '600'))
 _cache: dict[str, tuple[float, list]] = {}
 _cache_lock = Lock()
 
+# The server runs 4 worker processes and each had its own in-memory cache, so going back to a page
+# usually landed on a worker that had never seen it and re-ran yt-dlp. Results are also kept on disk
+# so every worker shares them.
+_DISK_CACHE = os.path.join(data_path, '_browse_cache')
+
+
+def _disk_path(key: str) -> str:
+    from hashlib import sha1
+    return os.path.join(_DISK_CACHE, sha1(key.encode()).hexdigest() + '.json')
+
+
+def _disk_get(key: str, ttl: int):
+    import json
+    path = _disk_path(key)
+    try:
+        if time.time() - os.path.getmtime(path) >= ttl: return None
+        with open(path) as f: return json.load(f)
+    except Exception:
+        return None
+
+
+def _disk_put(key: str, value):
+    import json
+    try:
+        os.makedirs(_DISK_CACHE, exist_ok=True)
+        with open(os.path.join(_DISK_CACHE, 'keepalive'), 'w') as f: f.write(str(int(time.time())))
+        path = _disk_path(key)
+        tmp = f'{path}.{os.getpid()}.tmp'
+        with open(tmp, 'w') as f: json.dump(value, f)
+        os.replace(tmp, path)
+        if hash(path) % 50 == 0:  # now and then, drop entries older than any TTL we use
+            for name in os.listdir(_DISK_CACHE):
+                full = os.path.join(_DISK_CACHE, name)
+                if name.endswith('.json') and time.time() - os.path.getmtime(full) > 3 * 3600: os.remove(full)
+    except Exception as e:
+        print(f'[browse] disk cache write failed: {e}')
+
 
 def _flat_opts(start: int, end: int, cookies: bool):
     opts = {
@@ -110,6 +147,9 @@ def _fetch(source: str, page: int, cookies: bool) -> dict:
         hit = _cache.get(key)
         if hit and now - hit[0] < CACHE_TTL:
             return hit[1]
+    if (disk := _disk_get(key, CACHE_TTL)) is not None:
+        with _cache_lock: _cache[key] = (now, disk)
+        return disk
 
     start = (page - 1) * PAGE_SIZE + 1
     end = page * PAGE_SIZE
@@ -126,6 +166,7 @@ def _fetch(source: str, page: int, cookies: bool) -> dict:
         'items': entries,
         'has_more': len(entries) >= PAGE_SIZE,
     }
+    _disk_put(key, result)
     with _cache_lock:
         _cache[key] = (now, result)
         if len(_cache) > 500:
@@ -231,7 +272,11 @@ def _cached(key: str, fn, ttl: int = CACHE_TTL):
         hit = _cache.get(key)
         if hit and now - hit[0] < ttl:
             return hit[1]
+    if (disk := _disk_get(key, ttl)) is not None:
+        with _cache_lock: _cache[key] = (now, disk)
+        return disk
     value = fn()
+    _disk_put(key, value)
     with _cache_lock:
         _cache[key] = (now, value)
     return value

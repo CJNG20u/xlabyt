@@ -19,11 +19,18 @@ class External:
 
 
     _reload_lock = threading.Lock()
+    _reload_checked = 0.0
 
 
     @staticmethod
     def yt_dlp():
+        import time
         with External._reload_lock:
+            # checking the installed version scans site-packages; it ran before every single yt-dlp call.
+            # The updater runs once a day, so checking once a minute is plenty.
+            if 'yt_dlp' in sys.modules and time.monotonic() - External._reload_checked < 60:
+                return sys.modules['yt_dlp']
+            External._reload_checked = time.monotonic()
             try:
                 importlib.invalidate_caches()
                 if getattr(sys.modules.get('yt_dlp.version'), '__version__', None) != importlib.metadata.version('yt-dlp'):

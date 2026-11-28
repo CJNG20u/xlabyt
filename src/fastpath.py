@@ -58,6 +58,11 @@ def visitor_data(proxy: str | None = None) -> str | None:
     with _lock:
         if now < _visitor['retry_at']: return None
         if _visitor['value'] and now < _visitor['valid_until']: return _visitor['value']
+    # another worker process may already have a token: reuse it instead of fetching our own
+    state = _read_state()
+    if state.get('visitor') and now < float(state.get('visitor_until') or 0):
+        with _lock: _visitor.update(value=state['visitor'], valid_until=float(state['visitor_until']), retry_at=0.0)
+        return state['visitor']
     value = None
     try:
         r = requests.get(VISITOR_DATA_URL, headers={'User-Agent': 'Mozilla/5.0', 'Accept': '*/*'}, timeout=5,
@@ -70,6 +75,7 @@ def visitor_data(proxy: str | None = None) -> str | None:
             _visitor.update(value=value, valid_until=time.time() + VISITOR_DATA_TTL, retry_at=0.0)
         else:
             _visitor.update(value=None, valid_until=0.0, retry_at=time.time() + VISITOR_DATA_COOLDOWN)
+    if value: _write_state(visitor=value, visitor_until=time.time() + VISITOR_DATA_TTL)
     return value
 
 
@@ -77,6 +83,7 @@ def reject_visitor_data(value: str | None):
     with _lock:
         if value and _visitor['value'] == value:
             _visitor.update(value=None, valid_until=0.0, retry_at=time.time() + VISITOR_DATA_COOLDOWN)
+    if value and _read_state().get('visitor') == value: _write_state(visitor=None, visitor_until=0)
 
 
 STATE_FILE = None          # set by addons: <DATA_PATH>/fastpath.json, shared by all server processes
