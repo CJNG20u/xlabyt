@@ -34,7 +34,7 @@ signal.signal(signal.SIGTERM, signal_handler)
 @app.route('/')
 @app.route('/browse')
 def browse_page():
-    return render_template('browse.html', app_title=app_title, theme_color=theme_color, amoled_bg=amoled_bg, has_cookies=yt_browse.has_cookies())
+    return render_template('browse.html', app_title=app_title, theme_color=theme_color, amoled_bg=amoled_bg, has_cookies=yt_browse.has_cookies(), shorts_player=shorts_player)
 
 
 @app.route('/api/browse')

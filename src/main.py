@@ -50,6 +50,9 @@ linked_pid = int(os.environ.get('LINKED_PID', '0'))
 # bgutil PO token provider (separate container), e.g. http://bgutil-provider:4416. Lets YouTube's
 # mweb client stream without bot checks; empty = off
 pot_provider_url = (os.environ.get('POT_PROVIDER_URL') or '').strip().rstrip('/')
+# Shorts playback: 'youtube' = YouTube's own embedded player in the browser (no server download,
+# no ads in single Shorts, near-zero server load); 'server' = download each Short as an MP4 here
+shorts_player = 'server' if (os.environ.get('SHORTS_PLAYER') or 'youtube').strip().lower() == 'server' else 'youtube'
 
 deprecated_env = ['DOWNLOAD_PATH', 'PROXY']
 

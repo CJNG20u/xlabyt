@@ -140,6 +140,9 @@
         }
         .short-video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; background: transparent; }
         .short-frame iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; background: #000; }
+        /* YouTube's player sits under our own controls; taps go to our overlay, not YouTube's UI */
+        .short-frame iframe.yt-embed { pointer-events: none; background: transparent; opacity: 0; transition: opacity .15s; }
+        .short.ready .short-frame iframe.yt-embed { opacity: 1; }
         .short-touch { position: absolute; inset: 0; z-index: 2; cursor: pointer; -webkit-tap-highlight-color: transparent; }
         .short-paused {
             position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); z-index: 3; pointer-events: none;
@@ -528,6 +531,9 @@ function shortsView(p) {
     const box = $('#shorts');
     document.title = 'Shorts - {{ app_title }}';
     const mediaUrl = it => '/short-media?url=' + encodeURIComponent(it.url);
+    // SHORTS_PLAYER=youtube: play with YouTube's own embedded player (no server download)
+    const YT_MODE = {{ 'true' if shorts_player == 'youtube' else 'false' }};
+    const useYT = it => YT_MODE && it && !it._ytFail && it.id && it.id.length === 11;
     const slideEl = i => box.querySelector(`.short[data-i="${i}"]`);
 
     /* ----- video pool ----- */
@@ -568,7 +574,7 @@ function shortsView(p) {
     }
     function mount(i, preload) {
         const it = st.items[i], el = slideEl(i);
-        if (!it || !el || it._fallback) return null;
+        if (!it || !el || it._fallback || useYT(it)) return null;
         let slot = pool.find(s => s.idx === i);
         if (!slot) {
             const keep = new Set([st.active, st.active + 1, st.active + 2, st.active - 1]);
@@ -640,7 +646,108 @@ function shortsView(p) {
         });
         el.querySelector('.short-frame').prepend(f);
     }
+    /* ----- YouTube embedded player (SHORTS_PLAYER=youtube) ----- */
+    const ytPlayers = new Map();  // slide index -> {player, ready, adapter}
+    let ytApi = null;
+    function loadYTApi() {
+        if (window.YT && window.YT.Player) return Promise.resolve();
+        if (!ytApi) ytApi = new Promise((resolve, reject) => {
+            const prev = window.onYouTubeIframeAPIReady;
+            window.onYouTubeIframeAPIReady = () => { if (prev) try { prev(); } catch {} resolve(); };
+            const s = document.createElement('script');
+            s.src = 'https://www.youtube.com/iframe_api';
+            s.onerror = () => { ytApi = null; reject(new Error('YouTube player could not load')); };
+            document.head.append(s);
+        });
+        return ytApi;
+    }
+    function ytAdapter(rec) {  // same shape as a <video> for the tap / mute / keyboard code
+        const p = () => rec.ready ? rec.player : null;
+        return {
+            get paused() { const q = p(); return !q || [1, 3].indexOf(q.getPlayerState()) < 0; },
+            get muted() { const q = p(); return q ? q.isMuted() : true; },
+            set muted(m) { const q = p(); if (q) m ? q.mute() : q.unMute(); },
+            play() { const q = p(); if (q) q.playVideo(); return Promise.resolve(); },
+            pause() { const q = p(); if (q) q.pauseVideo(); },
+        };
+    }
+    function ytDestroy(i) {
+        const rec = ytPlayers.get(i); if (!rec) return;
+        ytPlayers.delete(i);
+        try { rec.player.destroy(); } catch {}
+        slideEl(i)?.querySelector('.yt-embed')?.remove();
+        slideEl(i)?.classList.remove('ready', 'paused');
+    }
+    function ytFallback(i) {  // embedding disabled etc.: use the server MP4 for this one
+        const it = st.items[i]; if (!it) return;
+        it._ytFail = true;
+        ytDestroy(i);
+        prefetch(it.url, 'short', i === st.active);
+        if (i === st.active) { const s = mount(i, 'auto'); if (s) playActive(s); }
+    }
+    async function ytMount(i, autoplay) {
+        const it = st.items[i], el = slideEl(i);
+        if (!useYT(it) || !el) return null;
+        if (ytPlayers.has(i)) return ytPlayers.get(i);
+        const rec = {player: null, ready: false, adapter: null};
+        rec.adapter = ytAdapter(rec);
+        ytPlayers.set(i, rec);
+        try { await loadYTApi(); } catch { ytPlayers.delete(i); ytFallback(i); return null; }
+        if (!live() || ytPlayers.get(i) !== rec) return null;
+        const holder = document.createElement('div');
+        el.querySelector('.short-frame').prepend(holder);
+        // before the first tap iOS only allows muted autoplay; the first tap turns sound on
+        const startMuted = st.muted || !st.unlocked;
+        rec.player = new YT.Player(holder, {
+            host: 'https://www.youtube-nocookie.com',
+            videoId: it.id,
+            width: '100%', height: '100%',
+            playerVars: {autoplay: 0, controls: 0, playsinline: 1, rel: 0, fs: 0, disablekb: 1,
+                         iv_load_policy: 3, modestbranding: 1, loop: 1, playlist: it.id, mute: startMuted ? 1 : 0,
+                         origin: location.origin},
+            events: {
+                onReady: () => {
+                    rec.ready = true;
+                    const f = rec.player.getIframe(); f.classList.add('yt-embed'); f.allow = 'autoplay; encrypted-media';
+                    if (st.active === i) { startMuted ? rec.player.mute() : rec.player.unMute(); rec.player.playVideo(); updateMute(); }
+                    else { rec.player.mute(); rec.player.playVideo(); }  // buffer the next one, paused once it starts
+                },
+                onStateChange: e => {
+                    const s = e.data;
+                    if (s === 1 && st.active !== i) { rec.player.pauseVideo(); rec.player.seekTo(0, true); return; }
+                    if (st.active !== i) return;
+                    if (s === 1) el.classList.add('ready');
+                    el.classList.toggle('paused', s === 2);
+                    if (s === 0) { rec.player.seekTo(0, true); rec.player.playVideo(); }  // loop
+                },
+                onError: () => ytFallback(i),
+            },
+        });
+        return rec;
+    }
+    function ytActivate(i) {
+        // keep only the previous, current and next two players alive
+        for (const k of [...ytPlayers.keys()]) if (k < i - 1 || k > i + 2) ytDestroy(k);
+        for (const [k, rec] of ytPlayers) if (k !== i && rec.ready) { try { rec.player.pauseVideo(); } catch {} }
+        const rec = ytPlayers.get(i);
+        if (rec && rec.ready) {
+            rec.player.seekTo(0, true);
+            (st.muted || !st.unlocked) ? rec.player.mute() : rec.player.unMute();
+            rec.player.playVideo();
+            if ([1].indexOf(rec.player.getPlayerState()) >= 0) slideEl(i)?.classList.add('ready');
+            updateMute();
+        } else ytMount(i, true);
+        frameTimer = setInterval(() => {
+            const r = ytPlayers.get(i);
+            if (!live() || st.active !== i || !r || !r.ready) return;
+            const d = r.player.getDuration() || 0, bar = slideEl(i)?.querySelector('.short-progress i');
+            if (bar) bar.style.width = d ? Math.min(100, r.player.getCurrentTime() / d * 100) + '%' : '0';
+        }, 250);
+        setTimeout(() => { if (live() && st.active === i) { ytMount(i + 1); ytMount(i + 2); } }, 400);
+    }
     function current() {  // {play, pause, paused, muted} for whichever player the active short uses
+        const r = ytPlayers.get(st.active);
+        if (r && r.ready) return r.adapter;
         const s = activeSlot();
         if (s) return s.v;
         return framePlayer(slideEl(st.active));
@@ -669,7 +776,7 @@ function shortsView(p) {
             img.src = `https://i.ytimg.com/vi/${it.id}/oardefault.jpg`;
         });
         // the server starts downloading the first shorts right away
-        if (base === 0) fresh.slice(0, 4).forEach(it => prefetch(it.url, 'short'));
+        if (base === 0 && !YT_MODE) fresh.slice(0, 4).forEach(it => prefetch(it.url, 'short'));
         return fresh.length;
     }
     function slide(it, i) {
@@ -753,21 +860,28 @@ function shortsView(p) {
         clearInterval(frameTimer);
         // stop everything else; reset the one we left so it starts over next time
         for (const s of pool) if (s.idx >= 0 && s.idx !== i) { s.v.pause(); if (s.idx === prev && s.v.readyState) s.v.currentTime = 0; }
-        box.querySelectorAll('.short iframe').forEach(f => { if (+f.closest('.short').dataset.i !== i) f.remove(); });
+        box.querySelectorAll('.short iframe:not(.yt-embed)').forEach(f => { if (+f.closest('.short').dataset.i !== i) f.remove(); });
         box.querySelectorAll('.short.paused').forEach(el => { if (+el.dataset.i !== i) el.classList.remove('paused'); });
         const it = st.items[i]; if (!it) return;
         rememberPlay({...it, kind: 'short'});
         markWatched(it.id);
         const bar = slideEl(i)?.querySelector('.short-progress i'); if (bar) bar.style.width = '0';
+        if (useYT(it)) {
+            for (const s of pool) if (s.idx >= 0) s.v.pause();
+            ytActivate(i);
+            if (i >= st.items.length - 5) loadMore();
+            return;
+        }
+        for (const [k, rec] of ytPlayers) if (rec.ready) { try { rec.player.pauseVideo(); } catch {} }
         // server: have the current and next three downloaded / downloading
-        for (let k = i; k <= i + 5; k++) if (st.items[k] && !st.items[k]._fallback) prefetch(st.items[k].url, 'short', k === i);
+        for (let k = i; k <= i + 5; k++) if (st.items[k] && !st.items[k]._fallback && !useYT(st.items[k])) prefetch(st.items[k].url, 'short', k === i);
         if (it._fallback) showFrame(i);
         else { const s = mount(i, 'auto'); if (s) playActive(s); }
         // page: buffer the next two (and keep the previous one) so swiping is instant
         setTimeout(() => {
             if (!live() || st.active !== i) return;
-            warm(mount(i + 1, 'auto'));
-            warm(mount(i + 2, 'auto'));
+            if (!useYT(st.items[i + 1])) warm(mount(i + 1, 'auto'));
+            if (!useYT(st.items[i + 2])) warm(mount(i + 2, 'auto'));
             mount(i - 1, 'metadata');
         }, 150);
         if (i >= st.items.length - 5) loadMore();
@@ -821,7 +935,7 @@ function shortsView(p) {
     };
     addEventListener('keydown', onKey);
     // leaving the page: stop and free every video
-    const onHash = () => { if (!live()) { pool.forEach(s => { if (s.idx >= 0) release(s); }); removeEventListener('hashchange', onHash); } };
+    const onHash = () => { if (!live()) { pool.forEach(s => { if (s.idx >= 0) release(s); }); [...ytPlayers.keys()].forEach(ytDestroy); clearInterval(frameTimer); removeEventListener('hashchange', onHash); } };
     addEventListener('hashchange', onHash);
     box.focus({preventScroll: true});
 
