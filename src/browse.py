@@ -447,8 +447,12 @@ def warm_comments(url: str, delay: float = 4):
 from collections import deque
 from threading import Condition, Thread
 
-MAX_PREFETCH = int(os.environ.get('MAX_PREFETCH', '3'))
-MAX_SHORT_PREFETCH = int(os.environ.get('MAX_SHORT_PREFETCH', '4'))
+# per worker process. Every resolve can start a Deno JS-solver, so keep this small on small servers
+MAX_PREFETCH = int(os.environ.get('MAX_PREFETCH', '1'))
+MAX_SHORT_PREFETCH = int(os.environ.get('MAX_SHORT_PREFETCH', '1'))
+# resolve videos just because they scrolled into view (off by default: on a home feed that meant
+# dozens of background resolves and a maxed-out CPU). Hover, tap and Up next still prefetch.
+PREFETCH_VISIBLE = os.environ.get('PREFETCH_VISIBLE', 'false').lower() == 'true'
 _QUEUE_LIMIT = {'': 24, 'short': 10}
 
 
@@ -517,6 +521,7 @@ def prefetch(url: str, media: str = '', high: bool = False):
     if not url: return False
     media = 'short' if media == 'short' else ''
     if check_media(url, 'short' if media else 'meta'): return 'ready'
+    if not high and not PREFETCH_VISIBLE and not media: return False
     return _queues[media].add(url, high)
 
 

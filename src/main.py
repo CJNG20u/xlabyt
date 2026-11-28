@@ -134,4 +134,5 @@ if __name__ == '__main__':
         from app import wsgi
         uvicorn.run(wsgi, host='0.0.0.0', port=port, workers=1, lifespan='off')
     else:
-        uvicorn.run("app:wsgi", host='0.0.0.0', port=port, workers=4, lifespan='off')
+        # each worker loads its own yt-dlp (+ JS solver runs); 4 was too many for a 2 GB container
+        uvicorn.run("app:wsgi", host='0.0.0.0', port=port, workers=max(1, int(os.environ.get('WORKERS', '2'))), lifespan='off')
