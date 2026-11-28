@@ -194,6 +194,25 @@
         }
 
         #scrim { display: none; }
+
+        /* ---------- settings ---------- */
+        .sheet-bg { position: fixed; inset: 0; background: rgba(0,0,0,.6); z-index: 50; display: flex; align-items: center; justify-content: center;
+                    padding: calc(16px + env(safe-area-inset-top)) 16px calc(16px + env(safe-area-inset-bottom)); }
+        .sheet { background: var(--bg2); border-radius: 16px; width: 100%; max-width: 480px; max-height: 100%; overflow-y: auto; padding: 20px; }
+        .sheet h2 { margin: 0 0 4px; font-size: 20px; display: flex; align-items: center; justify-content: space-between; }
+        .sheet h3 { margin: 20px 0 8px; font-size: 15px; }
+        .sheet p, .sheet small { color: var(--muted); line-height: 1.5; margin: 6px 0; }
+        .sheet .status { background: var(--bg3); border-radius: 10px; padding: 10px 12px; color: var(--fg); display: flex; gap: 10px; align-items: center; }
+        .sheet .status i { color: var(--accent); }
+        .sheet .opt { display: flex; gap: 10px; align-items: flex-start; padding: 10px 0; cursor: pointer; }
+        .sheet .opt input { margin-top: 3px; accent-color: var(--accent); }
+        .sheet .opt.disabled { opacity: .45; pointer-events: none; }
+        .sheet .row { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+        .pill-btn { border: 0; border-radius: 18px; padding: 9px 16px; background: var(--bg3); color: var(--fg); font: inherit; cursor: pointer; }
+        .pill-btn.primary { background: var(--accent); color: #fff; }
+        .pill-btn:disabled { opacity: .5; }
+        .sheet .msg { min-height: 1.2em; font-size: 14px; }
+        .sheet .msg.err { color: #ff6b6b; }
         @media (max-width: 1000px) {
             main { margin-left: 0; padding: 12px max(12px, env(safe-area-inset-right)) calc(40px + env(safe-area-inset-bottom)) max(12px, env(safe-area-inset-left)); }
             nav { transform: translateX(-100%); }
@@ -227,6 +246,7 @@
         <button type="submit" aria-label="Search"><i class="fa-solid fa-magnifying-glass"></i></button>
     </form>
     <button class="icon-btn" id="paste-btn" title="Play link from clipboard"><i class="fa-solid fa-paste"></i></button>
+    <button class="icon-btn" id="settings-btn" title="Settings" aria-label="Settings"><i class="fa-solid fa-gear"></i></button>
 </header>
 
 <nav id="nav">
@@ -243,9 +263,10 @@
     <div id="nav-channels"></div>
     <hr>
     {% if not has_cookies %}
-    <small>No <code>cookies.txt</code> found — Subscriptions, History and Watch later from your YouTube account are off. "Following" works without an account.</small>
+    <small>No YouTube account — Subscriptions, History and Watch later are off. Add your <code>cookies.txt</code> in <a href="javascript:void(0)" onclick="openSettings()" style="color:var(--accent)">Settings</a>. "Following" works without an account.</small>
     {% endif %}
     <a href="javascript:void(0)" data-pwa-install hidden onclick="xlabInstall()"><i class="fa-solid fa-mobile-screen-button"></i>Install app</a>
+    <a href="javascript:void(0)" onclick="openSettings()"><i class="fa-solid fa-gear"></i>Settings</a>
     <a href="/classic"><i class="fa-solid fa-link"></i>Classic player page</a>
 </nav>
 <div id="scrim"></div>
@@ -1042,6 +1063,82 @@ $('#menu-btn').addEventListener('click', () => {
     else document.body.classList.toggle('nav-collapsed');
 });
 $('#scrim').addEventListener('click', () => document.body.classList.remove('nav-open'));
+
+/* ---------- settings ---------- */
+const ACCOUNT_SOURCE = '{{ account_source }}';
+async function openSettings() {
+    document.body.classList.remove('nav-open');
+    let acc = {source: ACCOUNT_SOURCE, share_server: true, server_has_cookies: false};
+    try { acc = await (await fetch('/api/account')).json(); } catch {}
+    const labels = {
+        own: ['fa-user-check', 'Using <b>your own</b> YouTube account (the cookies.txt you uploaded).'],
+        server: ['fa-server', 'Using the <b>server\'s</b> YouTube account.'],
+        guest: ['fa-user-secret', '<b>Guest mode</b> — no YouTube account.'],
+        none: ['fa-user-slash', 'No YouTube account.'],
+    };
+    const [icon, text] = labels[acc.source] || labels.none;
+    const serverOk = acc.share_server && acc.server_has_cookies;
+    const bg = document.createElement('div');
+    bg.className = 'sheet-bg';
+    bg.innerHTML = `<div class="sheet" role="dialog" aria-label="Settings">
+        <h2>Settings <button class="icon-btn" data-close aria-label="Close"><i class="fa-solid fa-xmark"></i></button></h2>
+        <h3>YouTube account</h3>
+        <div class="status"><i class="fa-solid ${icon}"></i><span>${text}</span></div>
+        <p>Your account is used for Home, Subscriptions, History, Watch later and your Shorts feed. It's only for this browser / app.</p>
+        <label class="opt ${acc.source === 'own' ? '' : 'disabled'}"><input type="radio" name="acc" value="own" ${acc.source === 'own' ? 'checked' : ''}>
+            <span>My own account<br><small>Upload your cookies.txt below.</small></span></label>
+        <label class="opt ${serverOk ? '' : 'disabled'}"><input type="radio" name="acc" value="server" ${acc.source === 'server' ? 'checked' : ''}>
+            <span>Server's account<br><small>${serverOk ? 'The account of whoever runs this server.' : 'Not available on this server.'}</small></span></label>
+        <label class="opt"><input type="radio" name="acc" value="guest" ${acc.source === 'guest' || acc.source === 'none' ? 'checked' : ''}>
+            <span>Guest<br><small>No account: search, channels, Following and Shorts still work.</small></span></label>
+        <h3>Upload cookies.txt</h3>
+        <small>Export it while signed in to YouTube with a browser extension such as "Get cookies.txt LOCALLY" (Netscape format). Use a private window and close it right after, so YouTube doesn't rotate the cookies.</small>
+        <input type="file" id="ck-file" accept=".txt,text/plain" hidden>
+        <div class="row">
+            <button class="pill-btn primary" id="ck-upload"><i class="fa-solid fa-upload"></i> ${acc.source === 'own' ? 'Replace' : 'Upload'} cookies.txt</button>
+            ${acc.source === 'own' ? '<button class="pill-btn" id="ck-remove"><i class="fa-solid fa-trash"></i> Remove my cookies</button>' : ''}
+        </div>
+        <div class="msg" id="ck-msg"></div>
+        <h3>This device</h3>
+        <div class="row">
+            <button class="pill-btn" id="clr-shorts">Forget watched Shorts</button>
+            <button class="pill-btn" id="clr-recent">Clear recently played</button>
+        </div>
+    </div>`;
+    document.body.append(bg);
+    const msg = (t, err) => { const m = bg.querySelector('#ck-msg'); m.textContent = t; m.classList.toggle('err', !!err); };
+    const close = () => bg.remove();
+    bg.addEventListener('click', e => { if (e.target === bg || e.target.closest('[data-close]')) close(); });
+    const done = t => { msg(t); setTimeout(() => location.reload(), 700); };
+    bg.querySelectorAll('input[name=acc]').forEach(r => r.addEventListener('change', async () => {
+        if (r.value === 'own') return;
+        if (acc.source === 'own' && !confirm('Remove your uploaded cookies from the server?')) { r.checked = false; return; }
+        if (acc.source === 'own') await fetch('/api/account/cookies', {method: 'DELETE'});
+        await fetch('/api/account/mode', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({mode: r.value === 'guest' ? 'guest' : ''})});
+        done(r.value === 'guest' ? 'Guest mode on' : "Using the server's account");
+    }));
+    const file = bg.querySelector('#ck-file');
+    bg.querySelector('#ck-upload').onclick = () => file.click();
+    file.onchange = async () => {
+        if (!file.files[0]) return;
+        msg('Uploading…');
+        const fd = new FormData(); fd.append('cookies', file.files[0]);
+        try {
+            const r = await fetch('/api/account/cookies', {method: 'POST', body: fd});
+            const d = await r.json().catch(() => ({}));
+            if (!r.ok) return msg(d.error || 'Upload failed', true);
+            done('Saved. Loading your account…');
+        } catch { msg('Upload failed', true); }
+    };
+    bg.querySelector('#ck-remove')?.addEventListener('click', async () => {
+        if (!confirm('Remove your uploaded cookies from the server?')) return;
+        await fetch('/api/account/cookies', {method: 'DELETE'});
+        done('Removed');
+    });
+    bg.querySelector('#clr-shorts').onclick = () => { store.set('xlabyt.shortsWatched', []); msg('Watched Shorts forgotten'); };
+    bg.querySelector('#clr-recent').onclick = () => { store.set('xlabyt.recent', []); msg('Recently played cleared'); };
+}
+$('#settings-btn').addEventListener('click', openSettings);
 
 // Support /browse?q=... and share-target style ?url=... links
 (() => {

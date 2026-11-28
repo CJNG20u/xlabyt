@@ -10,6 +10,7 @@ from main import *
 from addons import *
 from external import External
 import browse as yt_browse
+import accounts
 
 
 app = Flask(__name__)
@@ -31,10 +32,63 @@ signal.signal(signal.SIGINT, signal_handler)
 signal.signal(signal.SIGTERM, signal_handler)
 
 
+@app.before_request
+def pick_account():
+    # whose YouTube account the feeds use for this request (own upload / guest / server)
+    accounts.resolve(request, get_global_cookies_file(True))
+
+
+def _secure_cookie() -> bool:
+    return request.is_secure or request.headers.get('X-Forwarded-Proto', '').lower() == 'https'
+
+
+def _account_status():
+    return {'source': accounts.current_source.get(), 'share_server': accounts.SHARE_SERVER_ACCOUNT,
+            'server_has_cookies': bool(get_global_cookies_file(True))}
+
+
+@app.route('/api/account', methods=['GET'])
+def account_status():
+    return jsonify(_account_status())
+
+
+@app.route('/api/account/cookies', methods=['POST'])
+def account_upload():
+    f = request.files.get('cookies')
+    data = f.read(accounts.MAX_COOKIES_BYTES + 1) if f else (request.get_data()[:accounts.MAX_COOKIES_BYTES + 1])
+    try:
+        uid = accounts.save(request.cookies.get(accounts.UID_COOKIE), data)
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
+    resp = jsonify({'source': 'own'})
+    resp.set_cookie(accounts.UID_COOKIE, uid, max_age=2 * 365 * 86400, httponly=True, samesite='Lax', secure=_secure_cookie())
+    resp.delete_cookie(accounts.MODE_COOKIE)
+    return resp
+
+
+@app.route('/api/account/cookies', methods=['DELETE'])
+def account_remove():
+    accounts.remove(request.cookies.get(accounts.UID_COOKIE))
+    resp = jsonify({'ok': True})
+    resp.delete_cookie(accounts.UID_COOKIE)
+    return resp
+
+
+@app.route('/api/account/mode', methods=['POST'])
+def account_mode():
+    mode = (request.get_json(silent=True) or {}).get('mode') or request.form.get('mode') or ''
+    resp = jsonify({'mode': mode})
+    if mode == 'guest':
+        resp.set_cookie(accounts.MODE_COOKIE, 'guest', max_age=2 * 365 * 86400, samesite='Lax', secure=_secure_cookie())
+    else:
+        resp.delete_cookie(accounts.MODE_COOKIE)
+    return resp
+
+
 @app.route('/')
 @app.route('/browse')
 def browse_page():
-    return render_template('browse.html', app_title=app_title, theme_color=theme_color, amoled_bg=amoled_bg, has_cookies=yt_browse.has_cookies(), shorts_player=shorts_player)
+    return render_template('browse.html', app_title=app_title, theme_color=theme_color, amoled_bg=amoled_bg, has_cookies=yt_browse.has_cookies(), shorts_player=shorts_player, account_source=accounts.current_source.get())
 
 
 @app.route('/api/browse')

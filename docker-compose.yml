@@ -17,10 +17,12 @@ services:
     dns:
       - 1.1.1.1
       - 8.8.8.8
+    volumes:
+      # cookies.txt files people upload in Settings (kept across updates)
+      - ./accounts:/app/accounts
     # Optional: your YouTube account (Home feed, Subscriptions, History, Watch later).
     # Put cookies.txt next to this file FIRST, then uncomment the two lines below.
-    # volumes:
-    #   - ./cookies.txt:/app/cookies.txt
+    #   - ./cookies.txt:/app/cookies.txt   (add under volumes: above)
     # NVIDIA transcoding: use docker-compose.build.yml with Dockerfile.hwaccel and uncomment:
     # gpus: all
 

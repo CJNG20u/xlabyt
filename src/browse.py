@@ -10,6 +10,8 @@ from urllib.parse import quote_plus, urlparse
 
 from main import *
 from addons import YTDLP, get_global_cookies_file, pprint_exc
+import accounts
+import contextvars
 
 
 PAGE_SIZE = 24
@@ -68,7 +70,7 @@ def _flat_opts(start: int, end: int, cookies: bool):
     opts.update(ydl_global_opts)
     opts.pop('playlistend', None)
     opts.pop('noplaylist', None)
-    if cookies and (c := get_global_cookies_file(True)):
+    if cookies and (c := accounts.current.get()):  # this person's account (Settings), or the server's
         opts['cookiefile'] = c
         opts['mark_watched'] = False
     return opts
@@ -142,7 +144,7 @@ def _simplify(entry: dict) -> dict | None:
 
 
 def _fetch(source: str, page: int, cookies: bool, ttl: int = CACHE_TTL) -> dict:
-    key = f'{source}|{page}|{cookies}'
+    key = f'{source}|{page}|{accounts.cache_key() if cookies else "-"}'
     now = time.time()
     with _cache_lock:
         hit = _cache.get(key)
@@ -154,7 +156,8 @@ def _fetch(source: str, page: int, cookies: bool, ttl: int = CACHE_TTL) -> dict:
 
     start = (page - 1) * PAGE_SIZE + 1
     end = page * PAGE_SIZE
-    info = YTDLP.get_info(source, _flat_opts(start, end, cookies)) or {}
+    # personal feeds never fall back to the server's cookies (that would show someone else's account)
+    info = YTDLP.get_info(source, _flat_opts(start, end, cookies), fallback=not cookies) or {}
     entries = [e for e in (_simplify(e) for e in (info.get('entries') or [])) if e]
 
     result = {
@@ -208,7 +211,7 @@ def _search_page(query: str, page: int, cookies: bool = False, sp: str | None = 
         source = f'https://www.youtube.com/results?search_query={quote_plus(query)}&sp={sp}' if sp else f'ytsearch{n}:{query}'
         info = YTDLP.get_info(source, _flat_opts(start, n, cookies)) or {}
         return [e for e in (_simplify(x) for x in (info.get('entries') or [])) if e]
-    items = _cached(f'search|{query}|{bucket}|{cookies}|{sp}', build)
+    items = _cached(f'search|{query}|{bucket}|{accounts.cache_key() if cookies else "-"}|{sp}', build)
     offset = ((page - 1) % per_bucket) * PAGE_SIZE
     chunk = items[offset:offset + PAGE_SIZE]
     more = len(chunk) >= PAGE_SIZE or (offset + PAGE_SIZE >= len(items) and len(items) >= SEARCH_BUCKET)
@@ -229,7 +232,7 @@ def _channel_source(url: str, tab: str) -> str:
 
 
 def has_cookies() -> bool:
-    return bool(get_global_cookies_file(True))
+    return bool(accounts.current.get())
 
 
 def browse(kind: str, page: int = 1, q: str = '', url: str = '', tab: str = 'videos', hints: list | None = None, seed: int | None = None) -> dict:
@@ -558,9 +561,9 @@ def home_feed(page: int, seed: int | None = None, recent: list | None = None) ->
             return []
 
     with ThreadPoolExecutor(max_workers=4) as pool:
-        rec_job = pool.submit(_fetch, ':ytrec', page, True, HOME_REC_TTL)
-        subs_job = pool.submit(subs)
-        because_jobs = [pool.submit(because, u) for u in picks]
+        rec_job = pool.submit(contextvars.copy_context().run, _fetch, ':ytrec', page, True, HOME_REC_TTL)
+        subs_job = pool.submit(contextvars.copy_context().run, subs)
+        because_jobs = [pool.submit(contextvars.copy_context().run, because, u) for u in picks]
         rec = rec_job.result()
         extra = subs_job.result() + [it for j in because_jobs for it in j.result()]
 
@@ -602,7 +605,7 @@ def _subscribed_channels() -> list:
                 out.append({'url': url, 'name': e.get('title') or e.get('channel') or ''})
         return out
     try:
-        return _cached('subs-channels', build, ttl=3600) if has_cookies() else []
+        return _cached(f'subs-channels|{accounts.cache_key()}', build, ttl=3600) if has_cookies() else []
     except Exception as e:
         pprint_exc(e)
         return []
@@ -614,7 +617,7 @@ def _recommended_titles() -> list:
         info = YTDLP.get_info(':ytrec', _flat_opts(1, 48, True), fallback=False) or {}
         return [e.get('title') for e in (info.get('entries') or []) if e.get('title')]
     try:
-        return _cached('rec-titles', build, ttl=1800) if has_cookies() else []
+        return _cached(f'rec-titles|{accounts.cache_key()}', build, ttl=1800) if has_cookies() else []
     except Exception as e:
         pprint_exc(e)
         return []
@@ -671,8 +674,8 @@ def shorts_feed(page: int, q: str = '', hints: list | None = None, seed: int | N
     if not terms and not jobs:
         terms = ['#shorts']  # nothing personal to go on
     with ThreadPoolExecutor(max_workers=8) as pool:
-        chan_results = list(pool.map(lambda j: _channel_shorts(j[1], j[2], j[3]), jobs))
-        search_results = list(pool.map(lambda t: _shorts_search(t, cookies), [t for t in terms if t]))
+        chan_results = [f.result() for f in [pool.submit(contextvars.copy_context().run, _channel_shorts, j[1], j[2], j[3]) for j in jobs]]
+        search_results = [f.result() for f in [pool.submit(contextvars.copy_context().run, _shorts_search, t, cookies) for t in terms if t]]
     # interleave: subscription shorts and personal discovery
     subs_items = [it for lst in chan_results for it in lst]
     disc_items = [it for lst in search_results for it in lst[:8]]
