@@ -7,6 +7,11 @@ services:
       - "5000:5000"
     env_file:
       - .env
+    # Fast public DNS for YouTube lookups (Cloudflare, then Google). Remove these lines
+    # if you rely on a local DNS server (Pi-hole, AdGuard) or local hostnames in PROXIES.
+    dns:
+      - 1.1.1.1
+      - 8.8.8.8
     # Optional: your YouTube account (Home feed, Subscriptions, History, Watch later).
     # Put cookies.txt next to this file FIRST, then uncomment the two lines below.
     # volumes:

@@ -5,6 +5,9 @@ import subprocess
 import sys
 import time
 from threading import Thread
+from dotenv import load_dotenv
+load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), '.env'))
+import dnscache  # noqa: F401  (caches DNS lookups process-wide; reads DNS_CACHE_TTL)
 from external import External
 from dotenv import load_dotenv
 

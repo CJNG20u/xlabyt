@@ -713,17 +713,44 @@ def check_alerts():
     return alerts
 
 
+def _make_http_session() -> requests.Session:
+    """One shared keep-alive session for streaming: a video makes dozens of range requests to the
+    same googlevideo host, and reusing the connection skips a TCP + TLS handshake on each one."""
+    import http.cookiejar
+    from requests.adapters import HTTPAdapter
+    s = requests.Session()
+    s.cookies.set_policy(http.cookiejar.DefaultCookiePolicy(allowed_domains=[]))  # never keep cookies between requests
+    adapter = HTTPAdapter(pool_connections=32, pool_maxsize=64, max_retries=0)
+    s.mount('https://', adapter)
+    s.mount('http://', adapter)
+    return s
+
+
+_http = _make_http_session()
+_safe_hosts: dict[str, float] = {}  # hostname -> checked until (public address)
+STREAM_CHUNK = 64 * 1024
+
+
+def _check_public_host(hostname: str):
+    now = time.time()
+    if _safe_hosts.get(hostname, 0) > now: return
+    for addrinfo in socket.getaddrinfo(hostname, None):
+        ip = ipaddress.ip_address(addrinfo[4][0])
+        if not (getattr(ip, 'ipv4_mapped', None) or ip).is_global:
+            raise ValueError(f'Refusing to fetch URL resolving to disallowed address: {hostname}')
+    if len(_safe_hosts) > 2048: _safe_hosts.clear()
+    _safe_hosts[hostname] = now + 300
+
+
 def fetch_safe(url: str, **kwargs) -> requests.Response:
     """prevents requesting from local network"""
     for _ in range(5):
         hostname = urlparse(url).hostname
         if urlparse(url).scheme not in ('http', 'https') or not hostname:
             raise ValueError('Invalid URL')
-        for addrinfo in socket.getaddrinfo(hostname, None):
-            ip = ipaddress.ip_address(addrinfo[4][0])
-            if not (getattr(ip, 'ipv4_mapped', None) or ip).is_global:
-                raise ValueError(f'Refusing to fetch URL resolving to disallowed address: {hostname}')
-        response = requests.get(url, allow_redirects=False, **kwargs)
+        _check_public_host(hostname)
+        kwargs.setdefault('timeout', (5, 30))
+        response = _http.get(url, allow_redirects=False, **kwargs)
         if not response.is_redirect:
             return response
         url = urljoin(url, response.headers['Location'])
@@ -746,7 +773,7 @@ def download_media_file(url: str, path_without_ext: str, ext: str|None = None):
             urlpath = url[:url.find('?')]
         _, ext = os.path.splitext(urlpath)
     with open(f'{path_without_ext}.{ext.lstrip(".")}', 'wb') as f:
-        for chunk in response.iter_content(chunk_size=8192):
+        for chunk in response.iter_content(chunk_size=STREAM_CHUNK):
             f.write(chunk)
 
 
@@ -776,7 +803,7 @@ def stream_media_file(url: str, src: str, fmt_id: str|None = None, headers_range
         response.raise_for_status()
         mime_type = response.headers.get('Content-Type', 'application/octet-stream')
 
-        chunks = response.iter_content(chunk_size=8192)
+        chunks = response.iter_content(chunk_size=STREAM_CHUNK)
         content = next(chunks, b'')
         if 'mpegurl' in mime_type.lower() or content.startswith(b'#EXTM3U'):
             lines = []
@@ -1441,7 +1468,38 @@ def get_video_info(meta: dict):
     return info
 
 
+_YT_HOSTS = {'youtube.com', 'www.youtube.com', 'm.youtube.com', 'music.youtube.com', 'youtube-nocookie.com',
+             'www.youtube-nocookie.com', 'youtu.be', 'www.youtu.be'}
+_YT_PATH_ID = re.compile(r'^/(?:shorts|live|embed|v|e)/([A-Za-z0-9_-]{11})(?:[/?#]|$)')
+_YT_ID_ONLY = re.compile(r'^[A-Za-z0-9_-]{11}$')
+_YT_KEEP_PARAMS = ('list', 'index', 't', 'q')  # everything else (si, feature, pp, ab_channel, ...) is tracking noise
+
+
+def canonical_youtube_url(url: str) -> str | None:
+    """Every form of a YouTube video link -> https://www.youtube.com/watch?v=ID.
+    youtu.be/ID?si=..., m./music. links, /shorts/, /live/, /embed/ all map to the same URL, so they share
+    one cache folder: a video prefetched from the home feed is instant when opened from a share link."""
+    if _YT_ID_ONLY.match(url or ''): return f'https://www.youtube.com/watch?v={url}'
+    try: p = urlparse(url if '://' in url else 'https://' + url)
+    except Exception: return None
+    host = (p.hostname or '').lower()
+    if host not in _YT_HOSTS: return None
+    query = parse_qs(p.query)
+    vid = None
+    if host.endswith('youtu.be'):
+        vid = p.path.strip('/').split('/')[0]
+    elif p.path == '/watch':
+        vid = (query.get('v') or [''])[0]
+    elif m := _YT_PATH_ID.match(p.path):
+        vid = m.group(1)
+    if not vid or not _YT_ID_ONLY.match(vid): return None
+    keep = [(k, query[k][0]) for k in _YT_KEEP_PARAMS if query.get(k)]
+    return f'https://www.youtube.com/watch?v={vid}' + (f'&{urlencode(keep)}' if keep else '')
+
+
 def normalize_url(url):
+    if yt := canonical_youtube_url((url or '').strip()):
+        return yt
     parsed_url = urlparse(url)
     query_params = parse_qs(parsed_url.query)
     strip_query = ['pp', 'themeRefresh', 'utm_source', 'utm_medium', 'utm_campaign', 'utm_term', 'utm_content', 'fbclid', 'igshid', 'srcid']
@@ -1453,7 +1511,7 @@ def normalize_url(url):
     url = urlunparse(parsed_url._replace(query=new_query))
 
     if '.' not in url:
-        url = 'https://youtube.com/watch?v=' + url
+        url = 'https://www.youtube.com/watch?v=' + url
     if '/watch?v=' in url and not 'youtube.' in url.split('/watch?v=')[0]:
         yt_url = 'https://youtube.com/watch?v=' + url.split('/watch?v=')[1]
         try:
